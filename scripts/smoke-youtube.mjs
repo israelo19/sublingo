@@ -313,10 +313,31 @@ try {
           current: p?.getAudioTrack?.()?.getLanguageInfo ? p.getAudioTrack().getLanguageInfo() : null,
         };
       });
-      await page.waitForTimeout(6000);
-      const volume = await page.evaluate(() => document.querySelector('video')?.volume);
-      report.dub = { badge: dub, audioTracks, rawShape, volumeAfter6s: volume };
-      step('dub mode reports a source', Boolean(dub), { detail: `${dub} :: tracks=${JSON.stringify(audioTracks).slice(0, 300)} :: shape=${JSON.stringify(rawShape).slice(0, 400)} :: volume=${volume}` });
+      // Sample the original volume and video rate during dense dialogue: the original audio must
+      // stay ducked between consecutive lines (no full-volume leaks) and the voice must be speaking.
+      const samples = await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            const out = [];
+            const timer = setInterval(() => {
+              const v = document.querySelector('video');
+              const badge = document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-primary')?.textContent?.trim() ?? '';
+              out.push({ t: Math.round((v?.currentTime ?? 0) * 10) / 10, vol: Math.round((v?.volume ?? 0) * 100) / 100, rate: v?.playbackRate, speaking: speechSynthesis.speaking, line: badge.slice(0, 14) });
+              if (out.length >= 48) {
+                clearInterval(timer);
+                resolve(out);
+              }
+            }, 250);
+          }),
+      );
+      const withLine = samples.filter((s) => s.line);
+      const leaks = withLine.filter((s) => s.vol > 0.5).length;
+      const spoke = samples.filter((s) => s.speaking).length;
+      report.dub = { badge: dub, audioTracks, rawShape, samples };
+      step('dub mode reports a source', Boolean(dub), { detail: `${dub} :: tracks=${JSON.stringify(audioTracks).slice(0, 200)} :: shape=${JSON.stringify(rawShape).slice(0, 300)}` });
+      step('original audio stays ducked while lines are on screen', withLine.length > 10 && leaks <= Math.ceil(withLine.length * 0.1) && spoke > 5, {
+        detail: `samples=${samples.length} withLine=${withLine.length} fullVolumeLeaks=${leaks} speakingSamples=${spoke} :: ${samples.slice(0, 24).map((s) => `${s.t}s v${s.vol}${s.rate !== 1 ? ` r${s.rate}` : ''}${s.speaking ? ' S' : ''}`).join(' | ')}`,
+      });
       await page.screenshot({ path: path.join(OUT, 'youtube-dub.png') });
 
       const vocabPage = await context.newPage();

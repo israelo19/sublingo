@@ -1,11 +1,14 @@
 import type { PlayerAdapter } from '@/lib/player/types';
+import { indexAtOrBefore } from '@/lib/subtitles/active';
 import type { Cue } from '@/lib/subtitles/types';
+import { SpeechCalibrator, planCue, shouldDuck } from './plan';
 import { isSpeakable, speakableText } from './speakable';
 
 export type DubSource = 'youtube' | 'azure' | 'browser' | 'none';
 
 export interface ClipHandle {
-  done: Promise<void>;
+  /** Resolves when the clip finished or was cancelled; `actualSec` is the measured length when known. */
+  done: Promise<{ actualSec?: number }>;
   cancel(): void;
   pause(): void;
   resume(): void;
@@ -15,39 +18,53 @@ export interface DubVoiceProvider {
   readonly name: 'azure' | 'browser';
   /** Start generating audio for a cue ahead of time (optional). */
   prepare?(cue: Cue, index: number): void;
-  /**
-   * Speak one cue. `windowSec` is the time until the next cue starts; providers fit the
-   * clip into it (faster speech) and report the rate they chose via `onFit`.
-   */
-  speak(cue: Cue, index: number, windowSec: number, onFit: (fit: { rate: number; overflowSec: number }) => void): Promise<ClipHandle | undefined>;
+  /** Exact clip length in seconds when known (Azure); undefined lets the engine estimate. */
+  durationOf?(cue: Cue): Promise<number | undefined>;
+  speak(cue: Cue, index: number, speechRate: number): Promise<ClipHandle | undefined>;
   cancelAll(): void;
 }
 
 export interface DubEngineOptions {
-  /** Original audio volume while a dubbed line plays, 0-1. */
+  /** Original audio volume while dialogue plays, 0-1. */
   duck: number;
-  /** Slow the video slightly when a clip overflows its window even at max speed. */
+  /** Slow the video slightly so long lines fit; otherwise the voice speeds up instead. */
   slowVideo: boolean;
   prefetch: number;
   onStatus?(message: string): void;
 }
 
-const MAX_RATE = 1.3;
-const MIN_VIDEO_RATE = 0.8;
+/** Start a line this many seconds early to hide voice start-up latency. */
+const LEAD_SEC = 0.15;
+/** Let a line run this far into the next one before cutting it. */
+const MAX_OVERLAP_SEC = 0.5;
+const FADE_MS = 120;
 
 /**
- * Plays one dubbed clip per caption cue, in sync with the video. Ducks the original audio
- * while a clip plays and restores it in the gaps, so music and ambience survive.
+ * Plays one dubbed clip per caption cue, in sync with the video.
+ *
+ * Seamlessness comes from three rules: the original audio stays ducked (with short fades) for
+ * as long as dialogue is active or imminent, so no original speech leaks between lines; a
+ * line is fitted into its slot by slowing the video rather than rushing the voice; and the
+ * next line is not cut off mid-word for a small overlap.
  */
 export class DubEngine {
   private cues: Cue[] = [];
   private current?: { index: number; handle: ClipHandle };
   private starting?: number;
+  private lastSpoken = -1;
   private lastTime = -1;
-  private originalVolume?: number;
-  private originalRate?: number;
   private stopped = false;
+  private readonly calibrator = new SpeechCalibrator();
+
+  // ducking
   private ducked = false;
+  private baseVolume?: number;
+  private lastSetVolume?: number;
+  private fadeTimer?: number;
+
+  // pacing
+  private paced = false;
+  private baseRate?: number;
 
   constructor(
     private readonly player: PlayerAdapter,
@@ -59,6 +76,13 @@ export class DubEngine {
   setCues(cues: Cue[]): void {
     this.cues = cues;
     this.cancelCurrent();
+    this.lastSpoken = -1;
+  }
+
+  /** Warm the cache around a time so the first lines are ready when playback reaches them. */
+  prime(t: number): void {
+    const from = Math.max(0, indexAtOrBefore(this.cues, t));
+    this.prefetchFrom(from);
   }
 
   onTick(t: number, paused: boolean, activeIndex: number): void {
@@ -68,39 +92,67 @@ export class DubEngine {
 
     if (paused) {
       this.current?.handle.pause();
-      this.unduck();
+      this.setDuck(false);
       return;
     }
 
-    if (seeked) this.cancelCurrent();
-
-    if (this.current && this.current.index !== activeIndex && activeIndex >= 0) {
-      // The video moved on to the next line: cut the previous clip so we never lag behind.
+    if (seeked) {
       this.cancelCurrent();
-    } else if (this.current) {
-      this.current.handle.resume();
-      return;
+      this.lastSpoken = -1;
+      this.prime(t);
     }
 
-    if (activeIndex < 0 || this.starting === activeIndex) return;
-    const cue = this.cues[activeIndex];
+    // Treat an imminent next line as the target so the voice starts right on cue.
+    let target = activeIndex;
+    const next = indexAtOrBefore(this.cues, t) + 1;
+    if (next < this.cues.length && this.cues[next].start - t <= LEAD_SEC) target = next;
+
+    this.setDuck(shouldDuck(this.cues, t, Boolean(this.current) || this.starting !== undefined));
+
+    if (this.current) {
+      if (target < 0 || this.current.index === target) {
+        this.current.handle.resume();
+        return;
+      }
+      // A new line is due while the previous one is still speaking: tolerate a small overlap.
+      if (t - this.cues[target].start < MAX_OVERLAP_SEC) return;
+      this.cancelCurrent();
+    }
+
+    if (target < 0 || this.starting === target || this.lastSpoken === target) return;
+    const cue = this.cues[target];
     if (!cue || !isSpeakable(cue.text)) return;
-    // Do not start a line we are already more than 60% through (e.g. after a seek).
+    // Do not start a line we are already well into (e.g. after a seek into its middle).
     if (t - cue.start > Math.max(0.8, 0.6 * (cue.end - cue.start))) return;
-    void this.start(activeIndex, cue);
+    void this.start(target, cue);
+  }
+
+  private prefetchFrom(index: number) {
+    let queued = 0;
+    for (let i = index; i < this.cues.length && queued < this.opts.prefetch; i++) {
+      const c = this.cues[i];
+      if (!isSpeakable(c.text)) continue;
+      this.provider.prepare?.({ ...c, text: speakableText(c.text) }, i);
+      queued++;
+    }
   }
 
   private async start(index: number, cue: Cue): Promise<void> {
     this.starting = index;
-    const next = this.cues[index + 1];
-    const windowSec = Math.max(0.5, (next ? next.start : cue.end + 1.5) - cue.start);
-    for (let i = 1; i <= this.opts.prefetch; i++) {
-      const c = this.cues[index + i];
-      if (c && isSpeakable(c.text)) this.provider.prepare?.({ ...c, text: speakableText(c.text) }, index + i);
-    }
+    this.prefetchFrom(index + 1);
+    const spoken: Cue = { ...cue, text: speakableText(cue.text) };
+    const nextStart = this.cues[index + 1]?.start ?? cue.end + 2;
+    const windowSec = Math.max(0.4, nextStart - cue.start - 0.05);
+
+    let duration = (await this.provider.durationOf?.(spoken).catch(() => undefined)) ?? undefined;
+    if (this.starting !== index) return;
+    if (!duration) duration = this.calibrator.estimate(spoken.text);
+    const plan = planCue(duration, windowSec, this.opts.slowVideo);
+    this.applyVideoRate(plan.videoRate);
+
     let handle: ClipHandle | undefined;
     try {
-      handle = await this.provider.speak({ ...cue, text: speakableText(cue.text) }, index, windowSec, (fit) => this.applyFit(fit, windowSec));
+      handle = await this.provider.speak(spoken, index, plan.speechRate);
     } catch (err) {
       this.opts.onStatus?.(err instanceof Error ? err.message : String(err));
     }
@@ -109,49 +161,77 @@ export class DubEngine {
       return;
     }
     this.starting = undefined;
-    if (!handle || this.stopped) return;
+    if (!handle || this.stopped) {
+      this.restoreVideoRate();
+      return;
+    }
     this.current = { index, handle };
-    this.duck();
-    void handle.done.finally(() => {
-      if (this.current?.handle === handle) {
-        this.current = undefined;
-        this.unduck();
-        this.restoreRate();
-      }
+    void handle.done.then(({ actualSec }) => {
+      if (this.current?.handle !== handle) return;
+      this.current = undefined;
+      this.lastSpoken = index;
+      this.restoreVideoRate();
+      if (actualSec && this.provider.name === 'browser') this.calibrator.observe(spoken.text, actualSec * plan.speechRate);
     });
   }
 
-  private applyFit(fit: { rate: number; overflowSec: number }, windowSec: number) {
-    const v = this.video();
-    if (!v || !this.opts.slowVideo || fit.overflowSec <= 0.15) return;
-    // Slow the video so the clip fits: needed window = windowSec + overflow.
-    const rate = Math.max(MIN_VIDEO_RATE, windowSec / (windowSec + fit.overflowSec));
-    if (this.originalRate === undefined) this.originalRate = v.playbackRate;
-    v.playbackRate = Math.round(rate * 20) / 20;
-  }
+  // ---------- video pacing ----------
 
-  private restoreRate() {
+  private applyVideoRate(multiplier: number) {
     const v = this.video();
-    if (v && this.originalRate !== undefined) {
-      v.playbackRate = this.originalRate;
-      this.originalRate = undefined;
+    if (!v) return;
+    if (multiplier >= 0.999) {
+      this.restoreVideoRate();
+      return;
     }
+    if (!this.paced) {
+      this.baseRate = v.playbackRate || 1;
+      this.paced = true;
+    }
+    v.playbackRate = Math.round((this.baseRate ?? 1) * multiplier * 100) / 100;
   }
 
-  private duck() {
+  private restoreVideoRate() {
     const v = this.video();
-    if (!v || this.ducked) return;
-    this.originalVolume = v.volume;
-    v.volume = Math.min(v.volume, Math.max(0, this.opts.duck));
-    this.ducked = true;
+    if (v && this.paced && this.baseRate !== undefined) v.playbackRate = this.baseRate;
+    this.paced = false;
   }
 
-  private unduck() {
+  // ---------- ducking with fades ----------
+
+  private setDuck(on: boolean) {
     const v = this.video();
-    if (!v || !this.ducked) return;
-    if (this.originalVolume !== undefined) v.volume = this.originalVolume;
-    this.ducked = false;
+    if (!v) return;
+    // If the viewer moved the volume while we were ducked, adopt the new level as the base.
+    if (this.ducked && this.lastSetVolume !== undefined && Math.abs(v.volume - this.lastSetVolume) > 0.03) {
+      this.baseVolume = v.volume;
+    }
+    if (on === this.ducked) return;
+    if (on) this.baseVolume = v.volume;
+    this.ducked = on;
+    const base = this.baseVolume ?? v.volume;
+    const target = on ? Math.min(base, Math.max(0, this.opts.duck)) : base;
+    this.fadeTo(v, target);
   }
+
+  private fadeTo(v: HTMLVideoElement, target: number) {
+    if (this.fadeTimer) window.clearInterval(this.fadeTimer);
+    const from = v.volume;
+    const steps = Math.max(1, Math.round(FADE_MS / 15));
+    let step = 0;
+    this.fadeTimer = window.setInterval(() => {
+      step++;
+      const value = from + (target - from) * Math.min(1, step / steps);
+      v.volume = Math.max(0, Math.min(1, value));
+      this.lastSetVolume = v.volume;
+      if (step >= steps && this.fadeTimer) {
+        window.clearInterval(this.fadeTimer);
+        this.fadeTimer = undefined;
+      }
+    }, 15);
+  }
+
+  // ---------- lifecycle ----------
 
   private cancelCurrent() {
     this.starting = undefined;
@@ -159,15 +239,19 @@ export class DubEngine {
       this.current.handle.cancel();
       this.current = undefined;
     }
-    this.unduck();
-    this.restoreRate();
+    this.restoreVideoRate();
   }
 
   stop(): void {
     this.stopped = true;
     this.cancelCurrent();
     this.provider.cancelAll();
+    this.setDuck(false);
+    if (this.fadeTimer) {
+      window.clearInterval(this.fadeTimer);
+      this.fadeTimer = undefined;
+      const v = this.video();
+      if (v && this.baseVolume !== undefined) v.volume = this.baseVolume;
+    }
   }
 }
-
-export { MAX_RATE };

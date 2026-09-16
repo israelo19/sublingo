@@ -428,6 +428,7 @@ class SublingoYouTube {
     const provider = useAzure ? new AzureVoiceProvider(lang, browserVoice, status) : browserVoice;
     this.dub = new DubEngine(this.player, resolveYoutubeVideo, provider, { duck: s.dubDuck, slowVideo: s.dubSlowVideo, prefetch: 6, onStatus: status });
     this.dub.setCues(state.primaryCues.value);
+    this.dub.prime(this.player.currentTime());
     state.dubSource.value = provider.name;
     console.debug('[Sublingo] dub: speaking captions with', provider.name);
     this.dub.onTick(this.player.currentTime(), this.player.paused(), activeIndex(state.primaryCues.value, this.player.currentTime(), 0));

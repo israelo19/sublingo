@@ -306,6 +306,16 @@ switched to French, YouTube reported `fr.3` active); tier 1 browser voice on an 
 (badge showed the source, original volume ducked to 0.2 while speaking); sound descriptions
 like "[musique]" are skipped. Azure path awaits your key; the code path is unit-tested.
 
+**Bug run 2 (2026-09-16): original English leaked for ~0.3 s at every line start and the voice
+rushed.** Cause: the engine restored volume after each clip and only ducked once the voice had
+started, and it fitted long lines by speeding speech up to 1.3x before slowing the video. Fix
+(`src/lib/dub/engine.ts`, `plan.ts`): the original stays ducked, with 120 ms fades, whenever a
+speakable line is active or due within 1.2 s; lines start 150 ms early; a line may run 0.5 s into
+the next before being cut; speech is capped at 1.05x and the video is paced down (to 0.7x at most)
+so each line lands in its slot, using Azure's exact clip lengths and a self-calibrating
+characters-per-second estimate for the browser voice. Smoke test now samples volume and rate
+during dialogue and fails on full-volume leaks.
+
 ## 7. Risks and how the plan handles them
 
 | Risk | Mitigation |

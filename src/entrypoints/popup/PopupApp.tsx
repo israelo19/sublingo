@@ -180,7 +180,7 @@ export function PopupApp() {
               </span>
               <input type="range" min={0} max={100} step={5} value={Math.round(settings.dubDuck * 100)} onInput={(e) => update({ dubDuck: Number((e.currentTarget as HTMLInputElement).value) / 100 })} />
             </label>
-            <Toggle k="dubSlowVideo" label="Slow the video slightly for long lines" />
+            <Toggle k="dubSlowVideo" label="Slow the video for long lines" hint="Keeps the voice natural. Off = the voice speeds up instead" />
 
             <details class="sub">
               <summary>Azure neural voice {settings.azureKey ? '· key set' : '· not set up'}</summary>
