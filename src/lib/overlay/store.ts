@@ -15,6 +15,10 @@ export interface PopupState {
   result?: DictResult;
   error?: string;
   saved?: boolean;
+  /** Chrome on-device translation of the word alone. */
+  gloss?: string;
+  /** Chrome on-device literal translation of the whole sentence. */
+  literal?: string;
 }
 
 export const state = {
@@ -29,6 +33,10 @@ export const state = {
   time: signal(0),
   paused: signal(true),
   popup: signal<PopupState | null>(null),
+  /** On-device translation of the current line, used when the platform has no secondary track. */
+  mtLine: signal(''),
+  /** Short human-readable note about on-device translation (downloading, needs a click, off). */
+  mtStatus: signal(''),
 };
 
 export const primaryCue = computed<Cue | undefined>(() => {
@@ -37,10 +45,10 @@ export const primaryCue = computed<Cue | undefined>(() => {
   return i >= 0 && i < cues.length ? cues[i] : undefined;
 });
 
-/** Secondary-language text aligned to the primary cue's time window. */
+/** Secondary-language text aligned to the primary cue's time window, else on-device translation. */
 export const secondaryText = computed<string>(() => {
   const secondary = state.secondaryCues.value;
-  if (!secondary.length) return '';
+  if (!secondary.length) return state.mtLine.value;
   const p = primaryCue.value;
   if (p) {
     return overlapping(secondary, p.start, p.end)

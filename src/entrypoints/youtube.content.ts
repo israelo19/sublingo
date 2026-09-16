@@ -6,10 +6,11 @@ import { App, type OverlayActions } from '@/lib/overlay/App';
 import { closePopup, openPopup, patchPopup, primaryCue, secondaryText, state } from '@/lib/overlay/store';
 import { createHtml5Adapter } from '@/lib/player/html5';
 import type { PlayerAdapter } from '@/lib/player/types';
-import { DEFAULT_SETTINGS, settingsItem, type Settings } from '@/lib/settings';
+import { loadSettings, settingsItem, watchSettings, type Settings } from '@/lib/settings';
 import { activeIndex, nextIndex, previousIndex } from '@/lib/subtitles/active';
 import { parseJson3 } from '@/lib/subtitles/json3';
 import { baseLang, type SubtitleTrack, type TrackData } from '@/lib/subtitles/types';
+import { isUserGestureError, mtSupported, translateText } from '@/lib/translate/chrome';
 import { saveVocab } from '@/lib/vocab';
 import { YoutubeBridge } from '@/lib/youtube/bridge';
 import '@/lib/overlay/overlay.css';
@@ -64,6 +65,10 @@ class SublingoYouTube {
   private videoId?: string;
   private title = '';
   private langKey = '';
+  private hoverPaused = false;
+  private mtSeq = 0;
+  private mtIndex = -1;
+  private mtGestureArmed = false;
 
   constructor(private readonly ctx: ContentScriptContext) {}
 
@@ -73,17 +78,24 @@ class SublingoYouTube {
     onSave: () => void this.saveCurrent(),
     onToggleSecondary: () => void this.updateSettings({ showSecondary: !state.settings.value.showSecondary }),
     onLookupLemma: (lemma) => void this.lookupInPopup(lemma),
+    onCaptionHover: (entering) => this.onCaptionHover(entering),
   };
 
   async init(): Promise<void> {
-    const settings = await settingsItem.getValue();
+    const settings = await loadSettings();
     state.settings.value = settings;
     this.langKey = `${settings.primaryLang}|${settings.secondaryLang}`;
 
-    settingsItem.watch((next) => {
-      const s = next ?? DEFAULT_SETTINGS;
+    watchSettings((s) => {
       state.settings.value = s;
       this.applyNativeCaptionRule();
+      if (!s.machineTranslation) {
+        state.mtLine.value = '';
+        state.mtStatus.value = '';
+      } else {
+        this.mtIndex = -1;
+        this.maybeTranslateLine();
+      }
       const key = `${s.primaryLang}|${s.secondaryLang}`;
       if (key !== this.langKey) {
         this.langKey = key;
@@ -163,8 +175,11 @@ class SublingoYouTube {
     state.displayIndex.value = -1;
     state.primaryLabel.value = '';
     state.secondaryLabel.value = '';
+    state.mtLine.value = '';
     this.lastIdx = -1;
     this.autoPausedFor = -1;
+    this.mtIndex = -1;
+    this.hoverPaused = false;
     closePopup();
     this.applyNativeCaptionRule();
   }
@@ -199,9 +214,9 @@ class SublingoYouTube {
     // YouTube answers with an empty 200 when the proof-of-origin token is not ready yet
     // (the "pot race"). Back off, ask the page for a fresh track list, and retry.
     let primaryText = '';
-    let secondaryText = '';
+    let secondaryTrackText = '';
     for (let attempt = 0; attempt < 4; attempt++) {
-      [primaryText, secondaryText] = await Promise.all([
+      [primaryText, secondaryTrackText] = await Promise.all([
         this.fetchTrack(primary.url).catch(() => ''),
         secondary ? this.fetchTrack(secondary.url).catch(() => '') : Promise.resolve(''),
       ]);
@@ -220,9 +235,15 @@ class SublingoYouTube {
     if (!primaryCues.length) return this.fail('Sublingo: the caption track came back empty. Try reloading the page.');
 
     state.primaryCues.value = primaryCues;
-    state.secondaryCues.value = secondaryText ? parseJson3(secondaryText) : [];
+    state.secondaryCues.value = secondaryTrackText ? parseJson3(secondaryTrackText) : [];
     state.primaryLabel.value = trackBadge(primary);
-    state.secondaryLabel.value = secondary && state.secondaryCues.value.length ? trackBadge(secondary) : '';
+    if (secondary && state.secondaryCues.value.length) {
+      state.secondaryLabel.value = trackBadge(secondary);
+    } else if (s.machineTranslation && mtSupported() && s.secondaryLang) {
+      state.secondaryLabel.value = `${baseLang(s.secondaryLang).toUpperCase()} MT (Chrome)`;
+    } else {
+      state.secondaryLabel.value = '';
+    }
     state.status.value = 'ready';
     state.statusMessage.value = '';
     this.applyNativeCaptionRule();
@@ -274,6 +295,7 @@ class SublingoYouTube {
         state.displayIndex.value = idx;
         this.lastIdx = idx;
       }
+      this.maybeTranslateLine();
       return;
     }
 
@@ -290,7 +312,60 @@ class SublingoYouTube {
       this.lastIdx = idx;
     }
     state.displayIndex.value = idx >= 0 ? idx : activeIndex(cues, t, 0.35);
+    this.maybeTranslateLine();
   }
+
+  // ---------- Chrome on-device translation of the current line ----------
+
+  private maybeTranslateLine() {
+    const index = state.displayIndex.value;
+    if (index === this.mtIndex) return;
+    this.mtIndex = index;
+    const s = state.settings.value;
+    if (!s.machineTranslation || !mtSupported() || state.secondaryCues.value.length > 0) return;
+    void this.translateLine(index);
+  }
+
+  private async translateLine(index: number) {
+    const cue = state.primaryCues.value[index];
+    const s = state.settings.value;
+    const seq = ++this.mtSeq;
+    if (!cue) {
+      state.mtLine.value = '';
+      return;
+    }
+    try {
+      const text = await translateText(baseLang(s.primaryLang), baseLang(s.secondaryLang), cue.text, (p) => {
+        state.mtStatus.value = p < 1 ? `Downloading Chrome's ${s.primaryLang.toUpperCase()}→${s.secondaryLang.toUpperCase()} translation model… ${Math.round(p * 100)}%` : '';
+      });
+      if (seq !== this.mtSeq || state.displayIndex.value !== index) return;
+      state.mtLine.value = text;
+      state.mtStatus.value = '';
+    } catch (err) {
+      if (isUserGestureError(err)) {
+        state.mtStatus.value = 'Click the video once to enable on-device translation';
+        this.armMtGesture();
+      } else {
+        state.mtStatus.value = '';
+        console.debug('[Sublingo] on-device translation unavailable:', err);
+      }
+    }
+  }
+
+  /** Translator.create() may require a user gesture the first time; retry on the next one. */
+  private armMtGesture() {
+    if (this.mtGestureArmed) return;
+    this.mtGestureArmed = true;
+    const retry = () => {
+      this.mtGestureArmed = false;
+      this.mtIndex = -1;
+      this.maybeTranslateLine();
+    };
+    this.ctx.addEventListener(window, 'pointerdown', retry, { once: true, capture: true });
+    this.ctx.addEventListener(window, 'keydown', retry, { once: true, capture: true });
+  }
+
+  // ---------- Navigation and hover ----------
 
   private seekToIndex(i: number) {
     const cues = state.primaryCues.value;
@@ -309,9 +384,24 @@ class SublingoYouTube {
     this.seekToIndex(i);
   }
 
+  private onCaptionHover(entering: boolean) {
+    if (!state.settings.value.hoverPause || !this.player) return;
+    if (entering) {
+      if (!this.player.paused()) {
+        this.player.pause();
+        this.hoverPaused = true;
+      }
+    } else if (this.hoverPaused) {
+      this.hoverPaused = false;
+      if (!state.popup.value) this.player.play();
+    }
+  }
+
   private async updateSettings(patch: Partial<Settings>) {
     await settingsItem.setValue({ ...state.settings.value, ...patch });
   }
+
+  // ---------- Dictionary popup ----------
 
   private lookup(word: string): Promise<LookupResponse> {
     return browser.runtime.sendMessage({ type: 'lookup', word, lang: baseLang(state.settings.value.primaryLang) }) as Promise<LookupResponse>;
@@ -320,6 +410,7 @@ class SublingoYouTube {
   private async onWordClick(word: string, sentence: string, x: number, y: number) {
     if (state.settings.value.pauseOnWordClick) this.player?.pause();
     openPopup({ word, sentence, x, y, loading: true });
+    void this.glossInPopup(word, sentence);
     await this.lookupInPopup(word);
   }
 
@@ -335,6 +426,29 @@ class SublingoYouTube {
     }
   }
 
+  /** Word gloss and literal sentence translation from Chrome's on-device translator (best effort). */
+  private async glossInPopup(word: string, sentence: string) {
+    const s = state.settings.value;
+    if (!s.machineTranslation || !mtSupported() || !s.secondaryLang) return;
+    const src = baseLang(s.primaryLang);
+    const tgt = baseLang(s.secondaryLang);
+    const guard = () => state.popup.value?.word === word;
+    try {
+      const [gloss, literal] = await Promise.all([
+        translateText(src, tgt, word).catch(() => ''),
+        sentence ? translateText(src, tgt, sentence).catch(() => '') : Promise.resolve(''),
+      ]);
+      if (!guard()) return;
+      patchPopup({
+        gloss: gloss && gloss.toLowerCase() !== word.toLowerCase() ? gloss : undefined,
+        literal: literal && literal.toLowerCase() !== sentence.toLowerCase() ? literal : undefined,
+      });
+      state.mtStatus.value = '';
+    } catch (err) {
+      console.debug('[Sublingo] gloss failed:', err);
+    }
+  }
+
   private async saveCurrent() {
     const popup = state.popup.value;
     const r = popup?.result;
@@ -343,9 +457,11 @@ class SublingoYouTube {
     await saveVocab({
       word: r.word,
       lemma: r.lemma,
+      ipa: r.entries.find((e) => e.ipa)?.ipa ?? r.lemmaEntries?.find((e) => e.ipa)?.ipa,
       lang: r.lang,
       sentence: popup.sentence || primaryCue.value?.text || '',
       translation: secondaryText.value || undefined,
+      literal: popup.literal,
       definition: entries[0]?.senses[0]?.definition,
       site: 'youtube',
       videoId: this.videoId ?? '',

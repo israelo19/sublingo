@@ -1,0 +1,240 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+}
+
+body {
+  margin: 0;
+  background: #121216;
+  color: #eee;
+}
+
+main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+input[type='search'] {
+  flex: 1;
+  min-width: 220px;
+  max-width: 420px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #333;
+  background: #1c1c22;
+  color: #eee;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 18px 0;
+}
+
+button {
+  padding: 7px 12px;
+  border: 1px solid #3a3a42;
+  border-radius: 8px;
+  background: #22222a;
+  color: #eee;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2c2c35;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: #ffd86b;
+  color: #1a1a1a;
+  border-color: #ffd86b;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #ffe28f;
+}
+
+details {
+  position: relative;
+}
+
+summary {
+  cursor: pointer;
+  color: #bbb;
+  padding: 7px 4px;
+}
+
+.anki-settings {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  left: 0;
+  width: 320px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1c1c22;
+  border: 1px solid #333;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.anki-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.anki-settings input {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #121216;
+  color: #eee;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.hint a {
+  color: #9ad;
+}
+
+.status {
+  color: #9ad;
+  font-size: 13px;
+}
+
+.empty {
+  color: #888;
+  padding: 40px 0;
+  text-align: center;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.list li {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #1a1a20;
+  border: 1px solid #26262e;
+}
+
+.row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.word {
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.lemma {
+  color: #bbb;
+}
+
+.ipa {
+  color: #9ad;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #24352a;
+  color: #9fd8a8;
+}
+
+.del {
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #777;
+  font-size: 18px;
+}
+
+.del:hover {
+  color: #fff;
+  background: transparent;
+}
+
+.def {
+  margin-top: 4px;
+  color: #ddd;
+}
+
+.sentence {
+  margin-top: 8px;
+  color: #ccc;
+}
+
+.sentence mark {
+  background: rgba(255, 216, 107, 0.3);
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.tr {
+  margin-top: 2px;
+  color: #999;
+  font-style: italic;
+}
+
+.meta {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #777;
+}
+
+.meta a {
+  color: #9ad;
+  text-decoration: none;
+}
+
+.meta a:hover {
+  text-decoration: underline;
+}

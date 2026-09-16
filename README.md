@@ -8,8 +8,9 @@ the words you look up.
 Built as a no-cost alternative to RemFluent and Language Reactor. Everything
 runs locally in your browser: no account, no server, no subscription.
 
-**Status:** early. YouTube works. Hulu, Netflix, and Disney+ are next
-(see `docs/PLAN.md`).
+**Status:** early. YouTube works, including saved words, Anki export, and
+Chrome's on-device translation. Hulu, Netflix, and Disney+ are next (see
+`docs/PLAN.md`).
 
 ## Install (unpacked, Chrome)
 
@@ -34,8 +35,19 @@ extension pre-loaded, rebuilding on every save.
 - **Click any word** in the top line for lemma, part of speech, IPA, and English
   definitions from Wiktionary. The video pauses while you read (configurable).
 - **Pause** and the current line stays on screen.
-- **Save word** stores the word, its sentence, the translation line, and the
-  video timestamp locally. Export to Anki is coming in the next phase.
+- **Save word** stores the word, its sentence, the translation line, IPA, and the
+  video timestamp locally. Open **Saved words** from the toolbar popup to search
+  them, jump back to the exact second in the video, export a CSV, or send new
+  words straight to Anki (needs Anki open with the
+  [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on; the note type
+  and deck are created for you).
+- **On-device translation.** With Chrome 138+ the dictionary card also shows a
+  quick gloss of the word and a literal translation of the whole line, produced by
+  Chrome's built-in translator with nothing sent to any server. When a video has no
+  translation track at all, that same translator supplies the second line.
+- **Hover to pause** (optional): the video pauses while your pointer is over the
+  caption box and resumes when you move away.
+- **Layout:** text size and caption height are adjustable from the popup.
 
 Hotkeys (ignored while typing in a text field):
 

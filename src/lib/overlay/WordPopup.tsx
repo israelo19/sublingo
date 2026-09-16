@@ -51,6 +51,7 @@ export function WordPopup({ popup, actions }: { popup: PopupState; actions: Over
           </span>
         )}
         {ipa && <span class="sl-popup-ipa">{ipa}</span>}
+        {popup.gloss && <span class="sl-popup-gloss">≈ {popup.gloss}</span>}
         <button class="sl-close" onClick={actions.onClosePopup} aria-label="Close">
           ×
         </button>
@@ -68,7 +69,12 @@ export function WordPopup({ popup, actions }: { popup: PopupState; actions: Over
         )}
       </div>
 
-      {popup.sentence && <div class="sl-popup-sentence">{highlight(popup.sentence, popup.word)}</div>}
+      {popup.sentence && (
+        <div class="sl-popup-sentence">
+          <div>{highlight(popup.sentence, popup.word)}</div>
+          {popup.literal && <div class="sl-popup-literal">{popup.literal}</div>}
+        </div>
+      )}
 
       <div class="sl-popup-foot">
         <button class="sl-btn" onClick={actions.onSave} disabled={popup.saved || !r || r.notFound}>

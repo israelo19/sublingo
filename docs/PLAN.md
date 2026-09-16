@@ -221,7 +221,7 @@ Overlay with dual captions, native caption hiding, pause-persist, A/S/D/Space ho
 secondary visibility. Unit tests for json3/VTT parsers and alignment against fixture files.
 Exit criteria: watch a full French YouTube video using only this extension.
 
-**Phase 2: Vocabulary and translation**
+**Phase 2: Vocabulary and translation** — BUILT 2026-09-16 (vocab page, CSV and AnkiConnect export, Chrome on-device translation for glosses and literal lines, hover-to-pause, caption height control, icons). Awaiting your hands-on try.
 Save words with context, vocab page, CSV and AnkiConnect export. Chrome Translator API for
 literal sentence translation and word-in-context gloss. Auto-pause (Q), hover-to-pause, blur
 secondary until hover, font size and position controls.
@@ -261,6 +261,34 @@ Web Store publishing versus unpacked install only. Publishing happens only when 
   on a 10-minute video with auto-generated captions, which passes.
 - **Dictionary quality is good for French.** freedictionaryapi.com resolved `apprenez` to
   `apprendre` with IPA and glosses on the first live click. Wiktionary REST is the fallback.
+
+## 6.2 Proposed Phase 2.5: Dub mode ("hear it in French")
+
+Idea from your roommate: watch an English video but hear French, kept in sync. Researched
+2026-09-16. Four tiers, cheapest first; the plan is to build tiers 0 and 1 (both free),
+and offer tier 3 as an optional bring-your-own-key upgrade.
+
+| Tier | How | Cost | Quality | Sync |
+|---|---|---|---|---|
+| 0. YouTube's own dub | YouTube auto-dubs uploads into 27 languages including French, with "Expressive Speech" for French since early 2026, and it is on for every creator who enables advanced features. The player exposes `getAvailableAudioTracks()` / `setAudioTrack()` on `#movie_player`. Sublingo adds a "Listen in French when available" setting and switches the audio track automatically. | $0 | Best available: a real dub with matched pacing and intonation | Perfect, it is the video's own audio |
+| 1. On-device browser TTS | Web Speech API (`speechSynthesis`) reads each French caption line at its start. macOS ships French voices (Thomas, Amélie, Audrey; Siri voices if installed). Original audio is ducked to ~15% while a line is spoken, restored in gaps. | $0 | Fair to good on macOS, robotic on some Windows voices | Good: each line starts on cue; rate auto-fits long lines; falls back to trimming |
+| 2. Kokoro-82M in the browser | Neural TTS via WebGPU (transformers.js / kokoro-js), French supported, ~300 MB one-time download. Pre-generate audio per cue ahead of playback. | $0 | Good, clearly better than tier 1 | Good, and exact clip durations are known in advance so pacing can be planned |
+| 3. Cloud TTS, BYO key | Azure Neural TTS: 500k characters/month free forever (~10 h of speech), plus your $10k Azure credit. OpenAI gpt-4o-mini-tts: ~$0.015/min, so your $1,000 credit covers ~1,100 hours. Deepgram Aura-2 speaks French at $0.03/1k chars. ElevenLabs: best voices but only 10k chars/month free (~10 min) and not in your YC list. | $0 within free tiers/credits | Excellent | Same as tier 2 |
+
+**Important side-finding.** YouTube picks the dub matching your interface language by
+default. With an English UI, a French video may already be playing an *English* auto-dub
+(the RFI test video showed an "Auto-dubbed" badge). Tier 0 therefore has two jobs: for French
+videos, force the original French audio; for English videos, pick the French dub when one
+exists.
+
+**Sync design for tiers 1 to 3.** At each cue start, play that cue's audio. If the clip is
+longer than the cue window, speed it up to at most 1.25x; if still longer, slow the video to
+0.85x until the clip ends, then restore. Original audio ducks while a clip plays. French
+captions stay on screen so the dub is readable as well as audible. Kokoro's non-English
+phonemization needs a spike (the browser port relies on an external phonemizer for French).
+
+Recommendation: build tier 0 first (small, free, highest quality), then tier 1 as the fallback
+for videos without a French dub, then decide on tiers 2 and 3 based on how tier 1 sounds to you.
 
 ## 7. Risks and how the plan handles them
 

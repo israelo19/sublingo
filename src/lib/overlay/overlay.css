@@ -39,7 +39,7 @@
 .sl-captions {
   position: absolute;
   left: 50%;
-  bottom: 11%;
+  bottom: var(--sl-offset, 11%);
   transform: translateX(-50%);
   max-width: 88%;
   padding: calc(8px * var(--sl-scale)) calc(14px * var(--sl-scale));
@@ -104,6 +104,12 @@
 
 .sl-status-error {
   color: #ffb4a8;
+}
+
+.sl-status-mt {
+  bottom: 84px;
+  color: #bbb;
+  font-size: 12px;
 }
 
 .sl-badge {
@@ -171,6 +177,17 @@
 .sl-popup-ipa {
   color: #9ad;
   font-family: 'Charis SIL', 'Doulos SIL', 'Gentium', 'Segoe UI', sans-serif;
+}
+
+.sl-popup-gloss {
+  color: #ffd86b;
+  font-size: 14px;
+}
+
+.sl-popup-literal {
+  margin-top: 4px;
+  color: #9ad;
+  font-style: italic;
 }
 
 .sl-link {

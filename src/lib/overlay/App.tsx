@@ -9,6 +9,7 @@ export interface OverlayActions {
   onSave(): void;
   onToggleSecondary(): void;
   onLookupLemma(lemma: string): void;
+  onCaptionHover(entering: boolean): void;
 }
 
 const stop = (e: Event) => e.stopPropagation();
@@ -27,6 +28,7 @@ export function App({ actions }: { actions: OverlayActions }) {
   const secondary = secondaryText.value;
   const status = state.status.value;
   const popup = state.popup.value;
+  const mtStatus = state.mtStatus.value;
 
   const onWord = (word: string, e: MouseEvent) => {
     const el = e.currentTarget as HTMLElement;
@@ -36,22 +38,19 @@ export function App({ actions }: { actions: OverlayActions }) {
     actions.onWordClick(word, cue?.text ?? '', r.left - rr.left + r.width / 2, r.top - rr.top);
   };
 
+  const rootStyle = {
+    '--sl-scale': String(s.fontSize / 100),
+    '--sl-offset': `${s.captionOffset}%`,
+  } as Record<string, string>;
+
   return (
-    <div
-      class="sl-root"
-      style={{ '--sl-scale': String(s.fontSize / 100) } as Record<string, string>}
-      onMouseDown={stop}
-      onMouseUp={stop}
-      onClick={stop}
-      onDblClick={stop}
-      onKeyDown={stop}
-      onKeyUp={stop}
-    >
+    <div class="sl-root" style={rootStyle} onMouseDown={stop} onMouseUp={stop} onClick={stop} onDblClick={stop} onKeyDown={stop} onKeyUp={stop}>
       {status === 'loading' && <div class="sl-status">{state.statusMessage.value}</div>}
       {status === 'error' && <div class="sl-status sl-status-error">{state.statusMessage.value}</div>}
+      {status === 'ready' && mtStatus && <div class="sl-status sl-status-mt">{mtStatus}</div>}
 
       {status === 'ready' && s.enabled && cue && (
-        <div class="sl-captions">
+        <div class="sl-captions" onMouseEnter={() => actions.onCaptionHover(true)} onMouseLeave={() => actions.onCaptionHover(false)}>
           <div class="sl-primary" lang={s.primaryLang}>
             {safeTokenize(cue.text, baseLang(s.primaryLang)).map((t, i) =>
               t.word ? (

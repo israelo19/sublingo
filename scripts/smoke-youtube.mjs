@@ -14,7 +14,8 @@ const args = process.argv.slice(2);
 const headed = args.includes('--headed');
 const videoIdArg = args.find((a) => !a.startsWith('--'));
 
-const context = await chromium.launchPersistentContext(path.resolve('playwright-profile'), {
+const PROFILE = process.env.SMOKE_PROFILE ?? path.resolve('test-results', 'profile-' + Date.now());
+const context = await chromium.launchPersistentContext(PROFILE, {
   channel: 'chromium',
   headless: !headed,
   viewport: { width: 1280, height: 800 },
@@ -197,6 +198,17 @@ try {
     step('dictionary popup for first word', Boolean(popupText), { detail: `word="${wordText}" paused=${paused} :: ${popupText.slice(0, 220)}` });
     await page.screenshot({ path: path.join(OUT, 'youtube-popup.png') });
 
+    // Save the word, then confirm it shows up on the vocabulary page later.
+    const saveBtn = host.locator('.sl-btn');
+    if (await saveBtn.isEnabled()) {
+      await saveBtn.click();
+      await host.locator('.sl-btn', { hasText: 'Saved' }).waitFor({ timeout: 5000 });
+      step('save word', true, { detail: wordText });
+    } else {
+      step('save word', false, { detail: 'Save button disabled (no dictionary result)' });
+    }
+    report.savedWord = wordText;
+
     // Hotkey: close popup with Escape, then D for next line should change the caption.
     await page.keyboard.press('Escape');
     const before = outcome.primary;
@@ -243,6 +255,16 @@ try {
       await popupPage.screenshot({ path: path.join(OUT, 'settings-popup.png') });
       step('settings popup renders', popupTitle?.trim() === 'Sublingo', { detail: popupTitle });
       await popupPage.close();
+
+      const vocabPage = await context.newPage();
+      await vocabPage.goto(`chrome-extension://${extId}/vocab.html`);
+      await vocabPage.waitForSelector('h1', { timeout: 10000 });
+      await vocabPage.waitForTimeout(500);
+      const words = await vocabPage.$$eval('.word', (els) => els.map((e) => e.textContent?.trim().toLowerCase()));
+      await vocabPage.setViewportSize({ width: 900, height: 700 });
+      await vocabPage.screenshot({ path: path.join(OUT, 'vocab-page.png') });
+      step('vocab page lists the saved word', words.includes((report.savedWord ?? '').toLowerCase()), { detail: JSON.stringify(words) });
+      await vocabPage.close();
     }
   }
 } catch (err) {

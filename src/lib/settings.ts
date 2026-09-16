@@ -10,9 +10,18 @@ export interface Settings {
   blurSecondary: boolean;
   autoPause: boolean;
   pauseOnWordClick: boolean;
+  /** Pause while the pointer is over the caption box, resume when it leaves. */
+  hoverPause: boolean;
   hideNativeCaptions: boolean;
   /** Percent, 100 = default size. */
   fontSize: number;
+  /** Distance of the caption box from the bottom of the player, in percent. */
+  captionOffset: number;
+  /** Use Chrome's on-device Translator API for literal translations and word glosses. */
+  machineTranslation: boolean;
+  ankiUrl: string;
+  ankiDeck: string;
+  ankiModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -23,13 +32,26 @@ export const DEFAULT_SETTINGS: Settings = {
   blurSecondary: false,
   autoPause: false,
   pauseOnWordClick: true,
+  hoverPause: false,
   hideNativeCaptions: true,
   fontSize: 100,
+  captionOffset: 11,
+  machineTranslation: true,
+  ankiUrl: 'http://127.0.0.1:8765',
+  ankiDeck: 'Sublingo',
+  ankiModel: 'Sublingo',
 };
 
 export const settingsItem = storage.defineItem<Settings>('local:settings', {
   fallback: DEFAULT_SETTINGS,
 });
+
+/** Stored settings from an older version may lack newer keys; always merge over the defaults. */
+export const mergeSettings = (stored: Partial<Settings> | null | undefined): Settings => ({ ...DEFAULT_SETTINGS, ...(stored ?? {}) });
+
+export const loadSettings = async (): Promise<Settings> => mergeSettings(await settingsItem.getValue());
+
+export const watchSettings = (cb: (s: Settings) => void): (() => void) => settingsItem.watch((v) => cb(mergeSettings(v)));
 
 export const LANGUAGES: Array<{ code: string; name: string }> = [
   { code: 'fr', name: 'French' },
