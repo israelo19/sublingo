@@ -1,5 +1,15 @@
 import type { TrackData } from '@/lib/subtitles/types';
 
+export interface AudioTrackSummary {
+  index: number;
+  id: string;
+  lang: string;
+  name: string;
+  kind: string;
+  isDefault: boolean;
+  current: boolean;
+}
+
 /**
  * Isolated-world side of the bridge to the MAIN-world YouTube script.
  * Payloads travel as JSON strings inside CustomEvent.detail so the same code
@@ -10,6 +20,16 @@ export class YoutubeBridge {
 
   getTracks(wantedLangs: string[], timeoutMs = 20000): Promise<TrackData> {
     return this.request<TrackData>('sublingo:get-tracks', 'sublingo:tracks', { wantedLangs }, timeoutMs);
+  }
+
+  async getAudioTracks(timeoutMs = 5000): Promise<AudioTrackSummary[]> {
+    const res = await this.request<{ tracks: AudioTrackSummary[] }>('sublingo:audio-tracks', 'sublingo:audio-tracks-result', {}, timeoutMs);
+    return res.tracks ?? [];
+  }
+
+  async setAudioTrack(id: string, timeoutMs = 5000): Promise<boolean> {
+    const res = await this.request<{ ok: boolean }>('sublingo:set-audio-track', 'sublingo:set-audio-track-result', { id }, timeoutMs);
+    return Boolean(res.ok);
   }
 
   async fetchText(url: string, timeoutMs = 20000): Promise<string> {

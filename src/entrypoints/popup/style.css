@@ -81,6 +81,68 @@ input[type='checkbox'] {
   opacity: 0.5;
 }
 
+details.sub {
+  margin: 4px 0;
+}
+
+details.sub summary {
+  cursor: pointer;
+  color: #bbb;
+  padding: 4px 0;
+}
+
+.sub-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0 8px 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.08);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #bbb;
+  font-size: 12px;
+}
+
+.col input,
+.col select {
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+  background: #222;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 5px 6px;
+}
+
+.btns {
+  display: flex;
+  gap: 8px;
+}
+
+.btns button {
+  padding: 5px 10px;
+  border: 1px solid #3a3a42;
+  border-radius: 6px;
+  background: #22222a;
+  color: #eee;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btns button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+small.status {
+  color: #9ad;
+}
+
 .actions {
   padding: 8px 0;
 }

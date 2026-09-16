@@ -15,6 +15,8 @@ export default defineConfig({
       // AnkiConnect (local Anki add-on)
       'http://127.0.0.1:8765/*',
       'http://localhost:8765/*',
+      // Azure Speech text-to-speech (dub mode, optional)
+      'https://*.tts.speech.microsoft.com/*',
     ],
     icons: { 16: 'icon/16.png', 32: 'icon/32.png', 48: 'icon/48.png', 128: 'icon/128.png' },
   },

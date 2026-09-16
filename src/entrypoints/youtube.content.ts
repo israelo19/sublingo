@@ -11,6 +11,8 @@ import { activeIndex, nextIndex, previousIndex } from '@/lib/subtitles/active';
 import { parseJson3 } from '@/lib/subtitles/json3';
 import { baseLang, type SubtitleTrack, type TrackData } from '@/lib/subtitles/types';
 import { isUserGestureError, mtSupported, translateText } from '@/lib/translate/chrome';
+import { DubEngine } from '@/lib/dub/engine';
+import { AzureVoiceProvider, BrowserVoiceProvider } from '@/lib/dub/providers';
 import { saveVocab } from '@/lib/vocab';
 import { YoutubeBridge } from '@/lib/youtube/bridge';
 import '@/lib/overlay/overlay.css';
@@ -69,6 +71,10 @@ class SublingoYouTube {
   private mtSeq = 0;
   private mtIndex = -1;
   private mtGestureArmed = false;
+  private dub?: DubEngine;
+  private dubSeq = 0;
+  private dubKey = '';
+  private originalAudioTrackId?: string;
 
   constructor(private readonly ctx: ContentScriptContext) {}
 
@@ -100,6 +106,8 @@ class SublingoYouTube {
       if (key !== this.langKey) {
         this.langKey = key;
         if (this.videoId) void this.load();
+      } else {
+        void this.syncDub();
       }
     });
 
@@ -119,6 +127,7 @@ class SublingoYouTube {
       d: () => this.seekToIndex(nextIndex(state.primaryCues.value, this.player?.currentTime() ?? 0)),
       q: () => void this.updateSettings({ autoPause: !state.settings.value.autoPause }),
       w: () => void this.updateSettings({ showSecondary: !state.settings.value.showSecondary }),
+      v: () => void this.updateSettings({ dubMode: !state.settings.value.dubMode }),
       escape: () => closePopup(),
     };
   }
@@ -133,6 +142,8 @@ class SublingoYouTube {
     if (!id) return;
     if (id === this.videoId && state.status.value !== 'idle') return;
     this.videoId = id;
+    this.originalAudioTrackId = undefined;
+    this.dubKey = '';
     await this.mountIfNeeded();
     await this.load();
   }
@@ -180,6 +191,7 @@ class SublingoYouTube {
     this.autoPausedFor = -1;
     this.mtIndex = -1;
     this.hoverPaused = false;
+    this.stopDub();
     closePopup();
     this.applyNativeCaptionRule();
   }
@@ -248,6 +260,7 @@ class SublingoYouTube {
     state.statusMessage.value = '';
     this.applyNativeCaptionRule();
     if (this.player) this.tick(this.player.currentTime(), this.player.paused());
+    void this.syncDub();
   }
 
   private async fetchTrack(url: string): Promise<string> {
@@ -289,6 +302,7 @@ class SublingoYouTube {
     }
 
     const idx = activeIndex(cues, t, 0);
+    this.dub?.onTick(t, paused, idx);
     if (paused) {
       // Frozen: keep whatever line was showing unless we have been seeked into another one.
       if (idx >= 0) {
@@ -363,6 +377,74 @@ class SublingoYouTube {
     };
     this.ctx.addEventListener(window, 'pointerdown', retry, { once: true, capture: true });
     this.ctx.addEventListener(window, 'keydown', retry, { once: true, capture: true });
+  }
+
+  // ---------- Dub mode: hear the video in the language you are learning ----------
+
+  /** (Re)start or stop dubbing to match the current settings and video. Safe to call often. */
+  private async syncDub(): Promise<void> {
+    const s = state.settings.value;
+    const key = s.dubMode ? [s.primaryLang, s.dubProvider, s.dubDuck, s.dubSlowVideo, s.azureKey ? 'k' : '', s.azureRegion, s.azureVoice, s.browserVoice, this.videoId, state.status.value].join('|') : 'off';
+    if (key === this.dubKey) return;
+    this.dubKey = key;
+    this.stopDub();
+    if (!s.dubMode || state.status.value !== 'ready' || !this.player) {
+      if (!s.dubMode) await this.restoreAudioTrack();
+      return;
+    }
+    const seq = ++this.dubSeq;
+    const lang = baseLang(s.primaryLang);
+
+    // Tier 0: the platform already has an audio track in the target language.
+    try {
+      const tracks = await this.bridge.getAudioTracks();
+      if (seq !== this.dubSeq) return;
+      const match = tracks.find((tr) => tr.lang === lang);
+      if (match) {
+        if (!match.current) {
+          // Remember what was playing so turning dub mode off can put it back.
+          const before = tracks.find((tr) => tr.current) ?? tracks.find((tr) => tr.isDefault);
+          if (before && before.id !== match.id) this.originalAudioTrackId ??= before.id;
+          const ok = await this.bridge.setAudioTrack(match.id);
+          if (seq !== this.dubSeq) return;
+          if (!ok) throw new Error('could not switch audio track');
+        }
+        state.dubSource.value = 'youtube';
+        state.dubStatus.value = '';
+        console.debug('[Sublingo] dub: using YouTube audio track', match.name);
+        return;
+      }
+    } catch (err) {
+      console.debug('[Sublingo] dub: audio track lookup failed', err);
+    }
+
+    // Tier 1/3: speak the target-language captions ourselves.
+    const status = (m: string) => {
+      state.dubStatus.value = m;
+      if (m) setTimeout(() => (state.dubStatus.value === m ? (state.dubStatus.value = '') : undefined), 6000);
+    };
+    const browserVoice = new BrowserVoiceProvider(lang, s.browserVoice, () => status('Click the video once to allow the browser voice'));
+    const useAzure = s.dubProvider === 'azure' || (s.dubProvider === 'auto' && s.azureKey.trim().length > 0);
+    const provider = useAzure ? new AzureVoiceProvider(lang, browserVoice, status) : browserVoice;
+    this.dub = new DubEngine(this.player, resolveYoutubeVideo, provider, { duck: s.dubDuck, slowVideo: s.dubSlowVideo, prefetch: 6, onStatus: status });
+    this.dub.setCues(state.primaryCues.value);
+    state.dubSource.value = provider.name;
+    console.debug('[Sublingo] dub: speaking captions with', provider.name);
+    this.dub.onTick(this.player.currentTime(), this.player.paused(), activeIndex(state.primaryCues.value, this.player.currentTime(), 0));
+  }
+
+  private stopDub() {
+    this.dub?.stop();
+    this.dub = undefined;
+    state.dubSource.value = 'none';
+    state.dubStatus.value = '';
+  }
+
+  private async restoreAudioTrack() {
+    if (!this.originalAudioTrackId) return;
+    const id = this.originalAudioTrackId;
+    this.originalAudioTrackId = undefined;
+    await this.bridge.setAudioTrack(id).catch(() => false);
   }
 
   // ---------- Navigation and hover ----------
@@ -472,6 +554,7 @@ class SublingoYouTube {
   }
 
   private teardown() {
+    this.stopDub();
     this.player?.destroy();
     document.getElementById(HIDE_NATIVE_STYLE_ID)?.remove();
   }

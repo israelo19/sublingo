@@ -48,6 +48,31 @@ extension pre-loaded, rebuilding on every save.
 - **Hover to pause** (optional): the video pauses while your pointer is over the
   caption box and resumes when you move away.
 - **Layout:** text size and caption height are adjustable from the popup.
+- **Dub mode (hear it in French).** Turn on "Listen in French" in the popup (hotkey
+  `V`). If the video already has a French audio track (YouTube auto-dubs many
+  videos), Sublingo switches to it: perfect sync, music intact. Otherwise a voice
+  reads each French line in time with the video while the original audio is
+  turned down, so music and ambience still come through. The voice is Azure's
+  neural voice when you add a key (free tier, see below), and your browser's
+  built-in voice otherwise.
+
+### Azure voice setup (free tier, about ten hours of speech a month)
+
+1. Sign in at https://portal.azure.com and choose **Create a resource**.
+2. Search for **Speech** (Azure AI services) and click **Create**.
+3. Pick your subscription, create a resource group (for example `sublingo`),
+   choose a region near you such as `eastus`, and select the **Free F0** pricing
+   tier. Click **Review + create**, then **Create**.
+4. Open the resource and go to **Keys and Endpoint**. Copy **Key 1** and note the
+   **Region**.
+5. In the Sublingo popup, turn on **Listen in French**, expand **Azure neural
+   voice**, paste the key, pick the region, click **Load voices** and choose one,
+   then **Test voice**.
+
+The key is stored only in your browser's extension storage. The free tier allows
+20 requests a minute, which fits normal speech; very fast dialogue falls back to
+the browser voice for the lines Azure can't deliver in time. Each line is cached,
+so replaying a video costs nothing.
 
 Hotkeys (ignored while typing in a text field):
 
@@ -58,6 +83,7 @@ Hotkeys (ignored while typing in a text field):
 | `D` | Next line |
 | `Q` | Toggle pause-after-every-line |
 | `W` | Toggle the translation line |
+| `V` | Toggle dub mode (listen in the language you're learning) |
 | `Esc` | Close the dictionary popup |
 
 ## Develop

@@ -256,6 +256,69 @@ try {
       step('settings popup renders', popupTitle?.trim() === 'Sublingo', { detail: popupTitle });
       await popupPage.close();
 
+      // Dub mode: enable via extension storage, then check the overlay reports a dub source
+      // and dump the raw audio-track list so the MAIN-world field mapping can be verified.
+      const settingsPage = await context.newPage();
+      await settingsPage.goto(`chrome-extension://${extId}/popup.html`);
+      await settingsPage.evaluate(async () => {
+        const cur = (await chrome.storage.local.get('settings')).settings ?? {};
+        await chrome.storage.local.set({ settings: { ...cur, dubMode: true, dubProvider: 'browser' } });
+      });
+      await settingsPage.close();
+      await page.bringToFront();
+      await page.evaluate(() => {
+        const v = document.querySelector('video');
+        if (v) {
+          v.currentTime = 12;
+          void v.play();
+        }
+      });
+      const dub = await page
+        .waitForFunction(
+          () => {
+            const badge = document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-badge')?.textContent ?? '';
+            return badge.includes('🔊') && !badge.includes('🔊 …') ? badge : null;
+          },
+          null,
+          { timeout: 20000 },
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => null);
+      const audioTracks = await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            const id = 'smoke-' + Date.now();
+            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+            document.addEventListener('sublingo:audio-tracks-result', (e) => {
+              try {
+                const d = JSON.parse(e.detail);
+                if (d.requestId === id) {
+                  clearTimeout(timer);
+                  resolve(d.tracks);
+                }
+              } catch {}
+            });
+            document.dispatchEvent(new CustomEvent('sublingo:audio-tracks', { detail: JSON.stringify({ requestId: id }) }));
+          }),
+      );
+      const rawShape = await page.evaluate(() => {
+        const p = document.querySelector('#movie_player');
+        const list = p?.getAvailableAudioTracks?.() ?? [];
+        const first = list[0];
+        return {
+          count: list.length,
+          methods: first ? Object.getOwnPropertyNames(Object.getPrototypeOf(first)).slice(0, 20) : [],
+          keys: first ? Object.keys(first).slice(0, 20) : [],
+          langInfo: first?.getLanguageInfo ? first.getLanguageInfo() : null,
+          current: p?.getAudioTrack?.()?.getLanguageInfo ? p.getAudioTrack().getLanguageInfo() : null,
+        };
+      });
+      await page.waitForTimeout(6000);
+      const volume = await page.evaluate(() => document.querySelector('video')?.volume);
+      report.dub = { badge: dub, audioTracks, rawShape, volumeAfter6s: volume };
+      step('dub mode reports a source', Boolean(dub), { detail: `${dub} :: tracks=${JSON.stringify(audioTracks).slice(0, 300)} :: shape=${JSON.stringify(rawShape).slice(0, 400)} :: volume=${volume}` });
+      await page.screenshot({ path: path.join(OUT, 'youtube-dub.png') });
+
       const vocabPage = await context.newPage();
       await vocabPage.goto(`chrome-extension://${extId}/vocab.html`);
       await vocabPage.waitForSelector('h1', { timeout: 10000 });

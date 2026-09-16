@@ -37,6 +37,9 @@ export const state = {
   mtLine: signal(''),
   /** Short human-readable note about on-device translation (downloading, needs a click, off). */
   mtStatus: signal(''),
+  /** Where the dubbed audio comes from while dub mode is on. */
+  dubSource: signal<'youtube' | 'azure' | 'browser' | 'none'>('none'),
+  dubStatus: signal(''),
 };
 
 export const primaryCue = computed<Cue | undefined>(() => {

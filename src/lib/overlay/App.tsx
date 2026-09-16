@@ -29,6 +29,17 @@ export function App({ actions }: { actions: OverlayActions }) {
   const status = state.status.value;
   const popup = state.popup.value;
   const mtStatus = state.mtStatus.value;
+  const dubSource = state.dubSource.value;
+  const dubStatus = state.dubStatus.value;
+  const dubLabel = s.dubMode
+    ? dubSource === 'youtube'
+      ? ' · 🔊 YouTube track'
+      : dubSource === 'azure'
+        ? ' · 🔊 Azure voice'
+        : dubSource === 'browser'
+          ? ' · 🔊 browser voice'
+          : ' · 🔊 …'
+    : '';
 
   const onWord = (word: string, e: MouseEvent) => {
     const el = e.currentTarget as HTMLElement;
@@ -47,7 +58,7 @@ export function App({ actions }: { actions: OverlayActions }) {
     <div class="sl-root" style={rootStyle} onMouseDown={stop} onMouseUp={stop} onClick={stop} onDblClick={stop} onKeyDown={stop} onKeyUp={stop}>
       {status === 'loading' && <div class="sl-status">{state.statusMessage.value}</div>}
       {status === 'error' && <div class="sl-status sl-status-error">{state.statusMessage.value}</div>}
-      {status === 'ready' && mtStatus && <div class="sl-status sl-status-mt">{mtStatus}</div>}
+      {status === 'ready' && (mtStatus || dubStatus) && <div class="sl-status sl-status-mt">{dubStatus || mtStatus}</div>}
 
       {status === 'ready' && s.enabled && cue && (
         <div class="sl-captions" onMouseEnter={() => actions.onCaptionHover(true)} onMouseLeave={() => actions.onCaptionHover(false)}>
@@ -75,6 +86,7 @@ export function App({ actions }: { actions: OverlayActions }) {
           {state.primaryLabel.value}
           {state.secondaryLabel.value ? ` · ${state.secondaryLabel.value}` : ''}
           {!s.showSecondary && ' (hidden)'}
+          {dubLabel}
         </button>
       )}
 

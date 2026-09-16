@@ -22,6 +22,20 @@ export interface Settings {
   ankiUrl: string;
   ankiDeck: string;
   ankiModel: string;
+  /** Dub mode: hear the video in the language you are learning. */
+  dubMode: boolean;
+  /** 'auto' = Azure when a key is configured, otherwise the browser voice. */
+  dubProvider: 'auto' | 'azure' | 'browser';
+  /** Original audio volume (0-1) while a dubbed line plays. */
+  dubDuck: number;
+  /** Slow the video slightly when a dubbed line is longer than its time window. */
+  dubSlowVideo: boolean;
+  azureKey: string;
+  azureRegion: string;
+  /** Azure voice ShortName, e.g. fr-FR-DeniseNeural. Empty = pick a default for the language. */
+  azureVoice: string;
+  /** Browser (speechSynthesis) voice name. Empty = best available for the language. */
+  browserVoice: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -40,6 +54,14 @@ export const DEFAULT_SETTINGS: Settings = {
   ankiUrl: 'http://127.0.0.1:8765',
   ankiDeck: 'Sublingo',
   ankiModel: 'Sublingo',
+  dubMode: false,
+  dubProvider: 'auto',
+  dubDuck: 0.2,
+  dubSlowVideo: true,
+  azureKey: '',
+  azureRegion: 'eastus',
+  azureVoice: '',
+  browserVoice: '',
 };
 
 export const settingsItem = storage.defineItem<Settings>('local:settings', {

@@ -290,6 +290,22 @@ phonemization needs a spike (the browser port relies on an external phonemizer f
 Recommendation: build tier 0 first (small, free, highest quality), then tier 1 as the fallback
 for videos without a French dub, then decide on tiers 2 and 3 based on how tier 1 sounds to you.
 
+**Decision 2026-09-16:** build tier 0 (any language, matched to the learning language), tier 3
+Azure Neural on the free F0 tier as the main voice, and tier 1 browser voice as the always-on
+fallback. Background music is preserved by ducking the original audio to 20% while a line plays.
+Azure F0 allows 20 requests per minute; the background worker rate-limits to 18, caches every
+clip in IndexedDB, and falls back to the browser voice for a line whose clip is not ready.
+
+**Built 2026-09-16:** `src/lib/dub/engine.ts` (sync, ducking, fit-to-window, optional video
+slowdown), `src/lib/dub/providers.ts` (Azure via background + browser speechSynthesis),
+`src/lib/tts/azure.ts`, `src/lib/tts/browser.ts`, audio-track switching in the MAIN-world script,
+Dub section in the popup. Azure setup steps are in the README.
+
+**Verified 2026-09-16:** tier 0 on a MrBeast video with 22 dubbed tracks (bridge listed them,
+switched to French, YouTube reported `fr.3` active); tier 1 browser voice on an RFI video
+(badge showed the source, original volume ducked to 0.2 while speaking); sound descriptions
+like "[musique]" are skipped. Azure path awaits your key; the code path is unit-tested.
+
 ## 7. Risks and how the plan handles them
 
 | Risk | Mitigation |

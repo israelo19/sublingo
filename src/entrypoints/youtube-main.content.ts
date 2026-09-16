@@ -27,7 +27,27 @@ interface RawCaptionTrack {
   name?: { simpleText?: string; runs?: Array<{ text?: string }> };
 }
 
+interface AudioTrackInfo {
+  id?: string;
+  name?: string;
+  displayName?: string;
+  kind?: string;
+  isDefault?: boolean;
+  audioIsDefault?: boolean;
+  isAutoDubbed?: boolean;
+}
+
+interface RawAudioTrack {
+  id?: string;
+  getLanguageInfo?: () => AudioTrackInfo | undefined;
+  languageInfo?: AudioTrackInfo;
+  audioTrack?: AudioTrackInfo;
+  displayName?: string;
+}
+
 interface MoviePlayer extends HTMLElement {
+  getAvailableAudioTracks?: () => RawAudioTrack[] | undefined;
+  setAudioTrack?: (track: RawAudioTrack) => boolean | void;
   getAudioTrack?: () => { captionTracks?: RawCaptionTrack[] } | undefined;
   getVideoData?: () => { title?: string; video_id?: string } | undefined;
   getPlayerResponse?: () => PlayerResponse | undefined;
@@ -398,6 +418,55 @@ function buildTracks(raw: RawCaptionTrack[], pot: string | undefined, wantedLang
   return tracks;
 }
 
+// ---------- Audio tracks (dub mode tier 0) ----------
+
+interface AudioTrackSummary {
+  index: number;
+  id: string;
+  /** Language code parsed from YouTube's track id, e.g. "fr" from "fr.4". */
+  lang: string;
+  name: string;
+  kind: string;
+  isDefault: boolean;
+  current: boolean;
+}
+
+/** The language info object lives under a minified key; find it by shape ({ id, name }). */
+function findLanguageInfo(track: RawAudioTrack): AudioTrackInfo {
+  const direct = safe(() => track.getLanguageInfo?.()) ?? track.languageInfo ?? track.audioTrack;
+  if (direct && (direct.id || direct.name)) return direct;
+  for (const value of Object.values(track as Record<string, unknown>)) {
+    if (value && typeof value === 'object') {
+      const v = value as Record<string, unknown>;
+      if (typeof v.id === 'string' && typeof v.name === 'string') return v as AudioTrackInfo;
+    }
+  }
+  return {};
+}
+
+function describeAudioTrack(track: RawAudioTrack, index: number, currentId?: string): AudioTrackSummary {
+  const info = findLanguageInfo(track);
+  const id = String(info.id ?? track.id ?? index);
+  const lang = id.split(/[.\-_;]/)[0].toLowerCase();
+  return {
+    index,
+    id,
+    lang,
+    name: info.name ?? info.displayName ?? track.displayName ?? id,
+    kind: info.kind ?? (info.isAutoDubbed ? 'dubbed-auto' : ''),
+    isDefault: Boolean(info.isDefault ?? info.audioIsDefault),
+    current: currentId !== undefined && id === currentId,
+  };
+}
+
+function listAudioTracks(): { tracks: AudioTrackSummary[]; raw: RawAudioTrack[] } {
+  const p = player();
+  const raw = safe(() => p?.getAvailableAudioTracks?.()) ?? [];
+  const current = safe(() => (p?.getAudioTrack?.() as RawAudioTrack | undefined));
+  const currentId = current ? describeAudioTrack(current, -1).id : undefined;
+  return { raw, tracks: raw.map((t, i) => describeAudioTrack(t, i, currentId)) };
+}
+
 // ---------- Bridge ----------
 
 const respond = (eventName: string, detail: object) =>
@@ -433,6 +502,28 @@ export default defineContentScript({
           respond('sublingo:tracks', { requestId: req.requestId, videoId, error: err instanceof Error ? err.message : String(err) });
         }
       })();
+    });
+
+    document.addEventListener('sublingo:audio-tracks', (e) => {
+      const req = parseDetail<{ requestId: string }>(e);
+      if (!req) return;
+      const { tracks } = listAudioTracks();
+      respond('sublingo:audio-tracks-result', { requestId: req.requestId, tracks });
+    });
+
+    document.addEventListener('sublingo:set-audio-track', (e) => {
+      const req = parseDetail<{ requestId: string; id: string }>(e);
+      if (!req) return;
+      const { raw, tracks } = listAudioTracks();
+      const target = tracks.find((t) => t.id === req.id);
+      const p = player();
+      if (!target || !p?.setAudioTrack) {
+        respond('sublingo:set-audio-track-result', { requestId: req.requestId, ok: false, error: 'Audio track not found' });
+        return;
+      }
+      const ok = safe(() => p.setAudioTrack!(raw[target.index])) !== false;
+      log('set audio track', target.name, ok);
+      respond('sublingo:set-audio-track-result', { requestId: req.requestId, ok });
     });
 
     document.addEventListener('sublingo:fetch', (e) => {

@@ -3,7 +3,9 @@ import { ankiVersion, exportToAnki } from '@/lib/anki/client';
 import { lookupWord } from '@/lib/dictionary/lookup';
 import type { DictResult } from '@/lib/dictionary/types';
 import type { Message } from '@/lib/messages';
+import { idbGet, idbSet } from '@/lib/idb';
 import { loadSettings } from '@/lib/settings';
+import { AZURE_F0_REQUESTS_PER_MINUTE, AzureError, RateLimiter, azureListVoices, azureSynthesize, defaultAzureVoice, voicesForLanguage } from '@/lib/tts/azure';
 import { updateVocab, vocabItem } from '@/lib/vocab';
 
 const HIT_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -48,6 +50,67 @@ async function ankiExport(ids?: string[]) {
 
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+// ---------- Azure text-to-speech (dub mode) ----------
+
+const azureLimiter = new RateLimiter(AZURE_F0_REQUESTS_PER_MINUTE - 2, 60_000);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function bytesToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  return btoa(bin);
+}
+
+async function hashKey(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+interface CachedClip {
+  audio: string;
+  mime: string;
+  ts: number;
+}
+
+async function azureTts(text: string, lang: string, voiceOverride?: string) {
+  const s = await loadSettings();
+  if (!s.azureKey.trim()) throw new Error('No Azure key configured. Add one in the Sublingo popup under Dub.');
+  const voice = voiceOverride || s.azureVoice || defaultAzureVoice(lang);
+  const cacheKey = `azure:${voice}:${await hashKey(text.trim())}`;
+  const cached = await idbGet<CachedClip>('tts', cacheKey).catch(() => undefined);
+  if (cached) return { audio: cached.audio, mime: cached.mime, cached: true };
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const wait = azureLimiter.waitMs();
+    if (wait > 0) await sleep(wait + 50);
+    azureLimiter.record();
+    try {
+      const buf = await azureSynthesize({ key: s.azureKey, region: s.azureRegion, voice, text });
+      const clip: CachedClip = { audio: bytesToBase64(buf), mime: 'audio/mpeg', ts: Date.now() };
+      await idbSet('tts', cacheKey, clip).catch(() => undefined);
+      return { audio: clip.audio, mime: clip.mime, cached: false };
+    } catch (err) {
+      if (err instanceof AzureError && err.status === 429 && attempt < 2) {
+        await sleep(3000 * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Azure rate limit reached (free tier allows 20 requests per minute).');
+}
+
+async function azureVoices(lang: string, key?: string, region?: string) {
+  const s = await loadSettings();
+  const k = key ?? s.azureKey;
+  const r = region ?? s.azureRegion;
+  if (!k.trim()) throw new Error('No Azure key configured.');
+  const all = await azureListVoices(k, r);
+  return voicesForLanguage(all, lang).map((v) => ({ shortName: v.ShortName, displayName: v.LocalName && v.LocalName !== v.DisplayName ? `${v.DisplayName} (${v.LocalName})` : v.DisplayName, locale: v.Locale, gender: v.Gender }));
+}
+
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
     switch (message?.type) {
@@ -56,6 +119,12 @@ export default defineBackground(() => {
         return true;
       case 'anki-export':
         ankiExport(message.ids).then(sendResponse, (err: unknown) => sendResponse({ error: errorMessage(err) }));
+        return true;
+      case 'tts-azure':
+        azureTts(message.text, message.lang, message.voice).then(sendResponse, (err: unknown) => sendResponse({ error: errorMessage(err) }));
+        return true;
+      case 'azure-voices':
+        azureVoices(message.lang, message.key, message.region).then((voices) => sendResponse({ voices }), (err: unknown) => sendResponse({ error: errorMessage(err) }));
         return true;
       case 'anki-status':
         loadSettings()
