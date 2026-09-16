@@ -253,6 +253,12 @@ Web Store publishing versus unpacked install only. Publishing happens only when 
   Inside a shadow tree an important rule beats anything the page sets on the host, including
   inline `!important`, so the host box must be styled from our own shadow stylesheet with a
   more specific `:host(sublingo-overlay)` rule.
+- **Bug run 1 (2026-09-15): captions froze after ~20 s while the video played on.** Root
+  cause addressed: the player adapter captured one `<video>` element at mount time, and
+  YouTube swaps that element (around ads and preloaded videos), leaving us reading a dead
+  element's frozen `currentTime`. The adapter now re-resolves the live element on every
+  100 ms tick and rebinds its listeners. The smoke test gained a 60-second continuity check
+  on a 10-minute video with auto-generated captions, which passes.
 - **Dictionary quality is good for French.** freedictionaryapi.com resolved `apprenez` to
   `apprendre` with IPA and glosses on the first live click. Wiktionary REST is the fallback.
 

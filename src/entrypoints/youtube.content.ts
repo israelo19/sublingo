@@ -25,6 +25,17 @@ const pickTrack = (tracks: SubtitleTrack[], lang: string): SubtitleTrack | undef
 const trackBadge = (t: SubtitleTrack): string =>
   `${baseLang(t.lang).toUpperCase()}${t.kind === 'asr' ? ' auto' : t.kind === 'translated' ? ' MT' : ''}`;
 
+/** The <video> YouTube is actually playing right now. Prefers a playing element if several exist. */
+function resolveYoutubeVideo(): HTMLVideoElement | null {
+  const inPlayer = Array.from(document.querySelectorAll<HTMLVideoElement>('#movie_player video'));
+  if (inPlayer.length === 0) return document.querySelector<HTMLVideoElement>('video.html5-main-video');
+  return (
+    inPlayer.find((v) => !v.paused && v.readyState > 0) ??
+    inPlayer.find((v) => v.classList.contains('html5-main-video')) ??
+    inPlayer[0]
+  );
+}
+
 const isWatchPage = () => location.pathname === '/watch' || location.pathname.startsWith('/shorts/');
 
 const videoIdFromLocation = (): string | undefined =>
@@ -46,7 +57,6 @@ function waitFor<T>(fn: () => T | null | undefined, timeoutMs: number, intervalM
 class SublingoYouTube {
   private readonly bridge = new YoutubeBridge();
   private player?: PlayerAdapter;
-  private video?: HTMLVideoElement;
   private ui?: Awaited<ReturnType<typeof createShadowRootUi>>;
   private loadSeq = 0;
   private lastIdx = -1;
@@ -118,16 +128,10 @@ class SublingoYouTube {
   private async mountIfNeeded(): Promise<void> {
     const playerEl = await waitFor(() => document.querySelector<HTMLElement>('#movie_player'), 20000);
     if (!playerEl) return;
-    const video = await waitFor(
-      () => playerEl.querySelector<HTMLVideoElement>('video.html5-main-video') ?? document.querySelector<HTMLVideoElement>('video.html5-main-video'),
-      20000,
-    );
-    if (!video) return;
+    await waitFor(resolveYoutubeVideo, 20000);
 
-    if (this.video !== video) {
-      this.player?.destroy();
-      this.video = video;
-      this.player = createHtml5Adapter(video);
+    if (!this.player) {
+      this.player = createHtml5Adapter(resolveYoutubeVideo);
       this.player.onTime((t, paused) => this.tick(t, paused));
     }
 
@@ -258,7 +262,7 @@ class SublingoYouTube {
     if (!cues.length || state.status.value !== 'ready') return;
 
     // Pre-roll and mid-roll ads reuse the same <video>; hide captions while one plays.
-    if (document.querySelector('#movie_player.ad-showing, #movie_player.ad-interrupting')) {
+    if (document.querySelector('#movie_player.ad-showing')) {
       state.displayIndex.value = -1;
       return;
     }

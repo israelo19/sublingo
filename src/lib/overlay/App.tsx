@@ -1,5 +1,5 @@
 import { baseLang } from '@/lib/subtitles/types';
-import { tokenize } from '@/lib/subtitles/tokenize';
+import { tokenize, type Token } from '@/lib/subtitles/tokenize';
 import { WordPopup } from './WordPopup';
 import { primaryCue, secondaryText, state } from './store';
 
@@ -12,6 +12,14 @@ export interface OverlayActions {
 }
 
 const stop = (e: Event) => e.stopPropagation();
+
+const safeTokenize = (text: string, lang: string): Token[] => {
+  try {
+    return tokenize(text, lang);
+  } catch {
+    return [{ text }];
+  }
+};
 
 export function App({ actions }: { actions: OverlayActions }) {
   const s = state.settings.value;
@@ -45,7 +53,7 @@ export function App({ actions }: { actions: OverlayActions }) {
       {status === 'ready' && s.enabled && cue && (
         <div class="sl-captions">
           <div class="sl-primary" lang={s.primaryLang}>
-            {tokenize(cue.text, baseLang(s.primaryLang)).map((t, i) =>
+            {safeTokenize(cue.text, baseLang(s.primaryLang)).map((t, i) =>
               t.word ? (
                 <span key={i} class="sl-word" onClick={(e) => onWord(t.word!, e)}>
                   {t.text}

@@ -52,13 +52,21 @@ const step = (name, ok, extra = {}) => {
 try {
   let videoId = videoIdArg;
   if (!videoId) {
-    await page.goto('https://www.youtube.com/results?search_query=le+journal+en+fran%C3%A7ais+facile&sp=EgIoAQ%253D%253D', {
+    await page.goto('https://www.youtube.com/results?search_query=journal+en+fran%C3%A7ais+facile&sp=EgQYAygB', {
       waitUntil: 'domcontentloaded',
     });
     await page.waitForSelector('a#video-title', { timeout: 30000 });
-    const hrefs = await page.$$eval('a#video-title', (as) => as.map((a) => a.getAttribute('href')).filter(Boolean));
-    const first = hrefs.find((h) => h.startsWith('/watch?v='));
-    videoId = new URL(first, 'https://www.youtube.com').searchParams.get('v');
+    // Prefer a video at least 5 minutes long so the continuity check has room to run.
+    const candidates = await page.$$eval('ytd-video-renderer', (els) =>
+      els.map((el) => ({
+        href: el.querySelector('a#video-title')?.getAttribute('href') ?? '',
+        duration: el.querySelector('ytd-thumbnail-overlay-time-status-renderer, .badge-shape-wiz__text, #time-status span')?.textContent?.trim() ?? '',
+      })),
+    );
+    const seconds = (d) => d.split(':').reduce((acc, x) => acc * 60 + Number(x), 0);
+    const pick = candidates.find((c) => c.href.startsWith('/watch?v=') && /^\d+(:\d{2}){1,2}$/.test(c.duration) && seconds(c.duration) >= 300)
+      ?? candidates.find((c) => c.href.startsWith('/watch?v='));
+    videoId = new URL(pick.href, 'https://www.youtube.com').searchParams.get('v');
     report.videoId = videoId;
     step('find a captioned video via search', Boolean(videoId), { detail: videoId });
   }
@@ -196,6 +204,32 @@ try {
     await page.waitForTimeout(800);
     const after = await page.evaluate(() => document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-primary')?.textContent?.trim());
     step('hotkey D advances to next line', Boolean(after) && after !== before, { detail: `"${before?.slice(0, 40)}" -> "${after?.slice(0, 40)}"` });
+
+    // Continuity: captions must keep following playback. Sample for 40 s.
+    await page.evaluate(() => {
+      const v = document.querySelector('video');
+      if (v) {
+        v.currentTime = 0;
+        void v.play();
+      }
+    });
+    const samples = [];
+    for (let i = 0; i < 15; i++) {
+      await page.waitForTimeout(4000);
+      samples.push(
+        await page.evaluate(() => ({
+          t: Math.round(document.querySelector('video')?.currentTime ?? -1),
+          text: document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-primary')?.textContent?.trim().slice(0, 50) ?? '',
+        })),
+      );
+    }
+    const distinct = new Set(samples.map((s) => s.text).filter(Boolean)).size;
+    const tail = samples.slice(-3).map((s) => s.text);
+    const stale = tail.every((x) => x && x === tail[0]);
+    const advanced = samples[samples.length - 1].t > samples[0].t + 40;
+    step('captions keep tracking playback for 60 s', distinct >= 4 && !stale && advanced, {
+      detail: `distinct=${distinct} advanced=${advanced} stale=${stale} :: ${samples.map((s) => `${s.t}s "${s.text.slice(0, 18)}"`).join(' | ')}`,
+    });
 
     // Settings popup renders.
     const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker', { timeout: 10000 }).catch(() => undefined));
