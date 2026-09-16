@@ -1,5 +1,6 @@
 import { computed, signal } from '@preact/signals';
 import type { DictResult } from '@/lib/dictionary/types';
+import type { DubSource } from '@/lib/dub/engine';
 import { DEFAULT_SETTINGS, type Settings } from '@/lib/settings';
 import { activeIndex, overlapping } from '@/lib/subtitles/active';
 import type { Cue } from '@/lib/subtitles/types';
@@ -38,7 +39,7 @@ export const state = {
   /** Short human-readable note about on-device translation (downloading, needs a click, off). */
   mtStatus: signal(''),
   /** Where the dubbed audio comes from while dub mode is on. */
-  dubSource: signal<'youtube' | 'azure' | 'browser' | 'none'>('none'),
+  dubSource: signal<DubSource>('none'),
   dubStatus: signal(''),
 };
 

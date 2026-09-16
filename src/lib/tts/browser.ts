@@ -1,3 +1,4 @@
+import { baseLang } from '@/lib/subtitles/types';
 /** Web Speech API (speechSynthesis) voice: free, offline, always available as a fallback. */
 
 const QUALITY_HINTS = [/premium/i, /enhanced/i, /siri/i, /natural/i, /neural/i, /google/i];
@@ -21,7 +22,7 @@ export function loadVoices(timeoutMs = 1500): Promise<SpeechSynthesisVoice[]> {
 }
 
 export function rankVoices(voices: SpeechSynthesisVoice[], lang: string): SpeechSynthesisVoice[] {
-  const base = lang.toLowerCase().split(/[-_]/)[0];
+  const base = baseLang(lang);
   const score = (v: SpeechSynthesisVoice) => {
     let s = 0;
     QUALITY_HINTS.forEach((re, i) => {
@@ -49,9 +50,6 @@ export interface SpeechHandle {
   pause(): void;
   resume(): void;
 }
-
-/** Rough speaking duration in seconds at rate 1 (about 15 characters per second for French/English). */
-export const estimateSpeechSeconds = (text: string, charsPerSecond = 15): number => Math.max(0.6, text.trim().length / charsPerSecond);
 
 export function speakBrowser(text: string, o: { lang: string; voice?: SpeechSynthesisVoice; rate?: number; volume?: number }): SpeechHandle {
   const synth = globalThis.speechSynthesis;

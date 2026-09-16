@@ -1,3 +1,4 @@
+import { baseLang } from '@/lib/subtitles/types';
 /**
  * Azure AI Speech, text-to-speech REST API.
  * Docs: https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech
@@ -32,10 +33,24 @@ export const AZURE_REGIONS = [
   'japaneast', 'japanwest', 'koreacentral', 'australiaeast', 'centralindia', 'uaenorth', 'southafricanorth', 'qatarcentral',
 ];
 
-export const defaultAzureVoice = (lang: string): string => AZURE_DEFAULT_VOICES[lang.toLowerCase().split(/[-_]/)[0]] ?? AZURE_DEFAULT_VOICES.en;
+export const isValidAzureRegion = (region: string): boolean => AZURE_REGIONS.includes(region.trim().toLowerCase());
+/** e.g. fr-FR-DeniseNeural, fr-FR-Vivienne:DragonHDLatestNeural */
+export const isValidAzureVoiceName = (voice: string): boolean => /^[a-zA-Z]{2,3}-[A-Za-z]{2,4}-[A-Za-z0-9:]+$/.test(voice);
+
+export const defaultAzureVoice = (lang: string): string => AZURE_DEFAULT_VOICES[baseLang(lang)] ?? AZURE_DEFAULT_VOICES.en;
 
 /** "fr-FR-DeniseNeural" -> "fr-FR" */
 export const voiceLocale = (voice: string): string => voice.split('-').slice(0, 2).join('-');
+
+/**
+ * The configured voice is only used when it speaks the learning language (same base locale, or a
+ * multilingual voice); otherwise the language's default voice is used, e.g. after switching from
+ * French to Spanish.
+ */
+export function effectiveAzureVoice(configured: string, lang: string): string {
+  if (configured && (baseLang(voiceLocale(configured)) === baseLang(lang) || /multilingual/i.test(configured))) return configured;
+  return defaultAzureVoice(lang);
+}
 
 export const escapeXml = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -117,7 +132,7 @@ export async function azureListVoices(key: string, region: string, fetchFn: type
 
 /** Voices for a language, best-sounding first (HD, then multilingual, then neural). */
 export function voicesForLanguage(voices: AzureVoice[], lang: string): AzureVoice[] {
-  const base = lang.toLowerCase().split(/[-_]/)[0];
+  const base = baseLang(lang);
   const score = (v: AzureVoice) => (/HD/i.test(v.ShortName) ? 0 : /Multilingual/i.test(v.ShortName) ? 1 : 2);
   return voices
     .filter((v) => v.Locale.toLowerCase().startsWith(base) && (v.Status ?? 'GA') !== 'Deprecated')

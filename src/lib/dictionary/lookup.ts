@@ -4,6 +4,17 @@ import type { DictEntry, DictResult } from './types';
 
 type FetchLike = typeof fetch;
 
+/** Only http(s) links are rendered in the popup; anything else from an API response is dropped. */
+export const safeHttpUrl = (u: unknown): string | undefined => {
+  if (typeof u !== 'string') return undefined;
+  try {
+    const url = new URL(u);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 async function fetchJson<T>(url: string, fetchFn: FetchLike, init?: RequestInit): Promise<T | undefined> {
   const res = await fetchFn(url, init);
   if (res.status === 404) return undefined;
@@ -19,7 +30,7 @@ async function lookupOnce(
   const fd = await fetchJson<FreeDictResponse>(freeDictUrl(word, lang), fetchFn).catch(() => undefined);
   if (fd) {
     const parsed = parseFreeDict(fd);
-    if (parsed.entries.length) return { ...parsed, source: 'freedictionaryapi', sourceUrl: fd.source?.url };
+    if (parsed.entries.length) return { ...parsed, source: 'freedictionaryapi', sourceUrl: safeHttpUrl(fd.source?.url) ?? `https://freedictionaryapi.com/api/v1/entries/${encodeURIComponent(lang)}/${encodeURIComponent(word)}` };
   }
   const wk = await fetchJson<WiktionaryRestResponse>(wiktionaryUrl(word), fetchFn, {
     headers: { accept: 'application/json' },

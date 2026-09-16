@@ -37,6 +37,9 @@ export interface DubEngineOptions {
 const LEAD_SEC = 0.15;
 /** Let a line run this far into the next one before cutting it. */
 const MAX_OVERLAP_SEC = 0.5;
+/** Forward jumps larger than this, or any backward movement beyond jitter, count as a seek. */
+const SEEK_FORWARD_SEC = 1.5;
+const SEEK_BACKWARD_SEC = 0.3;
 const FADE_MS = 120;
 
 /**
@@ -65,18 +68,37 @@ export class DubEngine {
   // pacing
   private paced = false;
   private baseRate?: number;
+  private pacedRate?: number;
 
   constructor(
     private readonly player: PlayerAdapter,
     private readonly video: () => HTMLVideoElement | null,
     private readonly provider: DubVoiceProvider,
-    private readonly opts: DubEngineOptions,
+    private opts: DubEngineOptions,
   ) {}
+
+  /** Change duck level / pacing without rebuilding the engine. */
+  setOptions(patch: Partial<Pick<DubEngineOptions, 'duck' | 'slowVideo'>>): void {
+    this.opts = { ...this.opts, ...patch };
+    if (this.ducked) {
+      const v = this.video();
+      if (v) this.fadeTo(v, Math.min(this.baseVolume ?? v.volume, Math.max(0, this.opts.duck)));
+    }
+  }
 
   setCues(cues: Cue[]): void {
     this.cues = cues;
     this.cancelCurrent();
     this.lastSpoken = -1;
+  }
+
+  /** Swap in cues whose timing is unchanged (e.g. better translations) without interrupting speech. */
+  updateCueTexts(cues: Cue[]): void {
+    if (cues.length !== this.cues.length) {
+      this.setCues(cues);
+      return;
+    }
+    this.cues = cues;
   }
 
   /** Warm the cache around a time so the first lines are ready when playback reaches them. */
@@ -85,21 +107,28 @@ export class DubEngine {
     this.prefetchFrom(from);
   }
 
+  /** An ad (or anything else that takes over the player) is showing: go quiet and hands-off. */
+  suspend(): void {
+    this.cancelCurrent();
+    this.setDuck(false);
+    this.lastTime = -1;
+  }
+
   onTick(t: number, paused: boolean, activeIndex: number): void {
     if (this.stopped) return;
-    const seeked = this.lastTime >= 0 && Math.abs(t - this.lastTime) > 1.5;
+    const seeked = this.lastTime >= 0 && (t - this.lastTime > SEEK_FORWARD_SEC || t < this.lastTime - SEEK_BACKWARD_SEC);
     this.lastTime = t;
-
-    if (paused) {
-      this.current?.handle.pause();
-      this.setDuck(false);
-      return;
-    }
 
     if (seeked) {
       this.cancelCurrent();
       this.lastSpoken = -1;
       this.prime(t);
+    }
+
+    if (paused) {
+      this.current?.handle.pause();
+      this.setDuck(false);
+      return;
     }
 
     // Treat an imminent next line as the target so the voice starts right on cue.
@@ -145,7 +174,12 @@ export class DubEngine {
     const windowSec = Math.max(0.4, nextStart - cue.start - 0.05);
 
     let duration = (await this.provider.durationOf?.(spoken).catch(() => undefined)) ?? undefined;
-    if (this.starting !== index) return;
+    if (this.starting !== index || this.stopped) return;
+    // The viewer may have paused during the wait; do not speak over a frozen frame.
+    if (this.player.paused()) {
+      this.starting = undefined;
+      return;
+    }
     if (!duration) duration = this.calibrator.estimate(spoken.text);
     const plan = planCue(duration, windowSec, this.opts.slowVideo);
     this.applyVideoRate(plan.videoRate);
@@ -166,6 +200,7 @@ export class DubEngine {
       return;
     }
     this.current = { index, handle };
+    if (this.player.paused()) handle.pause();
     void handle.done.then(({ actualSec }) => {
       if (this.current?.handle !== handle) return;
       this.current = undefined;
@@ -188,13 +223,18 @@ export class DubEngine {
       this.baseRate = v.playbackRate || 1;
       this.paced = true;
     }
-    v.playbackRate = Math.round((this.baseRate ?? 1) * multiplier * 100) / 100;
+    this.pacedRate = Math.round((this.baseRate ?? 1) * multiplier * 100) / 100;
+    v.playbackRate = this.pacedRate;
   }
 
   private restoreVideoRate() {
     const v = this.video();
-    if (v && this.paced && this.baseRate !== undefined) v.playbackRate = this.baseRate;
+    if (v && this.paced && this.baseRate !== undefined) {
+      // If the viewer changed speed while we were pacing, respect their choice instead.
+      if (this.pacedRate === undefined || Math.abs(v.playbackRate - this.pacedRate) < 0.01) v.playbackRate = this.baseRate;
+    }
     this.paced = false;
+    this.pacedRate = undefined;
   }
 
   // ---------- ducking with fades ----------
@@ -202,16 +242,16 @@ export class DubEngine {
   private setDuck(on: boolean) {
     const v = this.video();
     if (!v) return;
-    // If the viewer moved the volume while we were ducked, adopt the new level as the base.
-    if (this.ducked && this.lastSetVolume !== undefined && Math.abs(v.volume - this.lastSetVolume) > 0.03) {
+    // If the viewer moved the volume while we were ducked (and no fade is running), adopt it as the base.
+    if (this.ducked && !this.fadeTimer && this.lastSetVolume !== undefined && Math.abs(v.volume - this.lastSetVolume) > 0.03) {
       this.baseVolume = v.volume;
     }
     if (on === this.ducked) return;
-    if (on) this.baseVolume = v.volume;
+    // Snapshot the base only from a settled (not mid-fade) level, so rapid flips never ratchet it down.
+    if (on && !this.fadeTimer) this.baseVolume = v.volume;
     this.ducked = on;
     const base = this.baseVolume ?? v.volume;
-    const target = on ? Math.min(base, Math.max(0, this.opts.duck)) : base;
-    this.fadeTo(v, target);
+    this.fadeTo(v, on ? Math.min(base, Math.max(0, this.opts.duck)) : base);
   }
 
   private fadeTo(v: HTMLVideoElement, target: number) {
@@ -246,12 +286,12 @@ export class DubEngine {
     this.stopped = true;
     this.cancelCurrent();
     this.provider.cancelAll();
-    this.setDuck(false);
     if (this.fadeTimer) {
       window.clearInterval(this.fadeTimer);
       this.fadeTimer = undefined;
-      const v = this.video();
-      if (v && this.baseVolume !== undefined) v.volume = this.baseVolume;
     }
+    const v = this.video();
+    if (v && this.ducked && this.baseVolume !== undefined) v.volume = this.baseVolume;
+    this.ducked = false;
   }
 }

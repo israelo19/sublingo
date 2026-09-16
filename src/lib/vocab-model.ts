@@ -26,8 +26,13 @@ export function sourceUrl(e: Pick<VocabEntry, 'site' | 'videoId' | 'time'>): str
   return '';
 }
 
+/**
+ * Quote a CSV cell. Cells that start with =, +, -, @ or a control character are prefixed with
+ * an apostrophe so spreadsheet apps treat them as text rather than formulas (CSV injection).
+ */
 const csvCell = (v: unknown): string => {
-  const s = v === undefined || v === null ? '' : String(v);
+  let s = v === undefined || v === null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 

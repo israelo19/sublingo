@@ -7,9 +7,10 @@ import { closePopup, openPopup, patchPopup, primaryCue, secondaryText, state } f
 import { createHtml5Adapter } from '@/lib/player/html5';
 import type { PlayerAdapter } from '@/lib/player/types';
 import { loadSettings, settingsItem, watchSettings, type Settings } from '@/lib/settings';
-import { activeIndex, nextIndex, previousIndex } from '@/lib/subtitles/active';
+import { activeIndex, indexAtOrBefore, nextIndex, previousIndex } from '@/lib/subtitles/active';
+import { applyGroups, cleanCaptionText, cleanCues, mergeFragments, mergeGroups } from '@/lib/subtitles/clean';
 import { parseJson3 } from '@/lib/subtitles/json3';
-import { baseLang, type SubtitleTrack, type TrackData } from '@/lib/subtitles/types';
+import { baseLang, type Cue, type SubtitleTrack, type TrackData } from '@/lib/subtitles/types';
 import { isUserGestureError, mtSupported, translateText } from '@/lib/translate/chrome';
 import { DubEngine } from '@/lib/dub/engine';
 import { AzureVoiceProvider, BrowserVoiceProvider } from '@/lib/dub/providers';
@@ -38,6 +39,16 @@ function resolveYoutubeVideo(): HTMLVideoElement | null {
     inPlayer[0]
   );
 }
+
+/** Caption URLs arrive from the page world, which any page script could spoof: accept only YouTube's caption endpoint. */
+const isTimedTextUrl = (raw: string): boolean => {
+  try {
+    const url = new URL(raw, location.href);
+    return url.protocol === 'https:' && /(^|\.)youtube\.com$/.test(url.hostname) && url.pathname === '/api/timedtext';
+  } catch {
+    return false;
+  }
+};
 
 const isWatchPage = () => location.pathname === '/watch' || location.pathname.startsWith('/shorts/');
 
@@ -71,6 +82,7 @@ class SublingoYouTube {
   private mtSeq = 0;
   private mtIndex = -1;
   private mtGestureArmed = false;
+  private pendingRetranslate?: () => void;
   private dub?: DubEngine;
   private dubSeq = 0;
   private dubKey = '';
@@ -90,7 +102,7 @@ class SublingoYouTube {
   async init(): Promise<void> {
     const settings = await loadSettings();
     state.settings.value = settings;
-    this.langKey = `${settings.primaryLang}|${settings.secondaryLang}`;
+    this.langKey = `${settings.primaryLang}|${settings.secondaryLang}|${settings.mergeFragments}`;
 
     watchSettings((s) => {
       state.settings.value = s;
@@ -102,7 +114,7 @@ class SublingoYouTube {
         this.mtIndex = -1;
         this.maybeTranslateLine();
       }
-      const key = `${s.primaryLang}|${s.secondaryLang}`;
+      const key = `${s.primaryLang}|${s.secondaryLang}|${s.mergeFragments}`;
       if (key !== this.langKey) {
         this.langKey = key;
         if (this.videoId) void this.load();
@@ -191,6 +203,7 @@ class SublingoYouTube {
     this.autoPausedFor = -1;
     this.mtIndex = -1;
     this.hoverPaused = false;
+    this.pendingRetranslate = undefined;
     this.stopDub();
     closePopup();
     this.applyNativeCaptionRule();
@@ -233,7 +246,9 @@ class SublingoYouTube {
         secondary ? this.fetchTrack(secondary.url).catch(() => '') : Promise.resolve(''),
       ]);
       if (seq !== this.loadSeq) return;
-      if (primaryText.trim()) break;
+      const secondaryOk = !secondary || secondaryTrackText.trim().length > 0;
+      if (primaryText.trim() && secondaryOk) break;
+      if (primaryText.trim() && attempt >= 2) break; // give up on the second line rather than the whole load
       await new Promise((r) => setTimeout(r, 300 * 2 ** attempt));
       const fresh = await this.bridge.getTracks([s.primaryLang, s.secondaryLang]).catch(() => undefined);
       if (seq !== this.loadSeq) return;
@@ -243,11 +258,15 @@ class SublingoYouTube {
       }
     }
 
-    const primaryCues = parseJson3(primaryText);
-    if (!primaryCues.length) return this.fail('Sublingo: the caption track came back empty. Try reloading the page.');
+    const primaryRaw = parseJson3(primaryText);
+    if (!primaryRaw.length) return this.fail('Sublingo: the caption track came back empty. Try reloading the page.');
+    const secondaryRaw = secondaryTrackText ? parseJson3(secondaryTrackText) : [];
 
-    state.primaryCues.value = primaryCues;
-    state.secondaryCues.value = secondaryTrackText ? parseJson3(secondaryTrackText) : [];
+    const prepared = await this.prepareCues(seq, s, data.tracks, primary, secondary, primaryRaw, secondaryRaw);
+    if (seq !== this.loadSeq || !prepared) return;
+
+    state.primaryCues.value = prepared.primary;
+    state.secondaryCues.value = prepared.secondary;
     state.primaryLabel.value = trackBadge(primary);
     if (secondary && state.secondaryCues.value.length) {
       state.secondaryLabel.value = trackBadge(secondary);
@@ -261,13 +280,108 @@ class SublingoYouTube {
     this.applyNativeCaptionRule();
     if (this.player) this.tick(this.player.currentTime(), this.player.paused());
     void this.syncDub();
+
+    if (prepared.retranslate && s.machineTranslation && mtSupported()) {
+      const { source, from } = prepared.retranslate;
+      void this.retranslate(seq, source, from, baseLang(s.primaryLang));
+    }
+  }
+
+  /**
+   * Turn raw caption events into display cues. Broadcast captions break mid-sentence, so
+   * fragments are joined into sentences (setting). When the main line is YouTube's per-fragment
+   * machine translation, segment it by the source track's sentences instead and hand the
+   * merged source sentences to Chrome's translator for a coherent translation.
+   */
+  private async prepareCues(
+    seq: number,
+    s: Settings,
+    tracks: SubtitleTrack[],
+    primary: SubtitleTrack,
+    secondary: SubtitleTrack | undefined,
+    primaryRaw: Cue[],
+    secondaryRaw: Cue[],
+  ): Promise<{ primary: Cue[]; secondary: Cue[]; retranslate?: { source: Cue[]; from: string } } | undefined> {
+    const finish = (cues: Cue[]) => (s.mergeFragments ? mergeFragments(cues) : cleanCues(cues));
+    if (primary.kind !== 'translated' || !primary.sourceLang) {
+      return { primary: finish(primaryRaw), secondary: finish(secondaryRaw) };
+    }
+
+    const sourceLang = baseLang(primary.sourceLang);
+    const sourceIsSecondary = Boolean(secondary && secondary.kind !== 'translated' && baseLang(secondary.lang) === sourceLang);
+    let sourceRaw = sourceIsSecondary ? secondaryRaw : [];
+    if (!sourceRaw.length) {
+      const sourceTrack = tracks
+        .filter((tr) => tr.kind !== 'translated' && baseLang(tr.lang) === sourceLang)
+        .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind])[0];
+      if (sourceTrack) sourceRaw = parseJson3(await this.fetchTrack(sourceTrack.url).catch(() => ''));
+      if (seq !== this.loadSeq) return undefined;
+    }
+    // YouTube translates event by event, so the translated track mirrors the source one to one.
+    if (sourceRaw.length !== primaryRaw.length) {
+      return { primary: finish(primaryRaw), secondary: finish(secondaryRaw) };
+    }
+    const groups = s.mergeFragments ? mergeGroups(sourceRaw) : sourceRaw.map((_, i) => [i]);
+    const mergedSource = applyGroups(sourceRaw, groups);
+    return {
+      primary: applyGroups(primaryRaw, groups),
+      secondary: sourceIsSecondary ? mergedSource : finish(secondaryRaw),
+      retranslate: { source: mergedSource, from: sourceLang },
+    };
+  }
+
+  /** Replace YouTube's fragment-by-fragment translation with whole-sentence translations, nearest lines first. */
+  private async retranslate(seq: number, source: Cue[], from: string, to: string): Promise<void> {
+    if (from === to) return;
+    const texts = new Map<number, string>();
+    let dirty = false;
+    const flush = () => {
+      if (!dirty || seq !== this.loadSeq) return;
+      dirty = false;
+      const cues = state.primaryCues.value.map((c, i) => (texts.has(i) ? { ...c, text: texts.get(i)! } : c));
+      state.primaryCues.value = cues;
+      this.dub?.updateCueTexts(cues);
+    };
+    const timer = window.setInterval(flush, 400);
+    const cur = Math.max(0, indexAtOrBefore(source, this.player?.currentTime() ?? 0));
+    const order: number[] = [];
+    for (let i = cur; i < source.length; i++) order.push(i);
+    for (let i = cur - 1; i >= 0; i--) order.push(i);
+    try {
+      for (const i of order) {
+        if (seq !== this.loadSeq) return;
+        const text = cleanCaptionText(source[i].text);
+        if (!text) continue;
+        const translated = await translateText(from, to, text);
+        if (translated) {
+          texts.set(i, translated);
+          dirty = true;
+        }
+      }
+      if (seq === this.loadSeq) {
+        state.primaryLabel.value = `${to.toUpperCase()} MT (Chrome)`;
+        state.mtStatus.value = '';
+      }
+    } catch (err) {
+      if (isUserGestureError(err)) {
+        state.mtStatus.value = 'Click the video once to enable on-device translation';
+        this.pendingRetranslate = () => void this.retranslate(seq, source, from, to);
+        this.armMtGesture();
+      } else {
+        console.debug('[Sublingo] sentence translation unavailable:', err);
+      }
+    } finally {
+      window.clearInterval(timer);
+      flush();
+    }
   }
 
   private async fetchTrack(url: string): Promise<string> {
+    if (!isTimedTextUrl(url)) throw new Error('Refused to fetch a non-YouTube caption URL');
     try {
       const res = await fetch(url, { credentials: 'include' });
       const text = res.ok ? await res.text() : '';
-      console.debug('[Sublingo] fetched track', res.status, text.length, url.slice(0, 140));
+      console.debug('[Sublingo] fetched track', res.status, text.length, new URL(url).searchParams.get('lang') ?? '', new URL(url).searchParams.get('tlang') ?? '');
       if (text.trim()) return text;
     } catch {
       // fall through to page-context fetch
@@ -295,9 +409,10 @@ class SublingoYouTube {
     const cues = state.primaryCues.value;
     if (!cues.length || state.status.value !== 'ready') return;
 
-    // Pre-roll and mid-roll ads reuse the same <video>; hide captions while one plays.
+    // Pre-roll and mid-roll ads reuse the same <video>; hide captions and silence the dub while one plays.
     if (document.querySelector('#movie_player.ad-showing')) {
       state.displayIndex.value = -1;
+      this.dub?.suspend();
       return;
     }
 
@@ -374,6 +489,9 @@ class SublingoYouTube {
       this.mtGestureArmed = false;
       this.mtIndex = -1;
       this.maybeTranslateLine();
+      const pending = this.pendingRetranslate;
+      this.pendingRetranslate = undefined;
+      pending?.();
     };
     this.ctx.addEventListener(window, 'pointerdown', retry, { once: true, capture: true });
     this.ctx.addEventListener(window, 'keydown', retry, { once: true, capture: true });
@@ -384,15 +502,22 @@ class SublingoYouTube {
   /** (Re)start or stop dubbing to match the current settings and video. Safe to call often. */
   private async syncDub(): Promise<void> {
     const s = state.settings.value;
-    const key = s.dubMode ? [s.primaryLang, s.dubProvider, s.dubDuck, s.dubSlowVideo, s.azureKey ? 'k' : '', s.azureRegion, s.azureVoice, s.browserVoice, this.videoId, state.status.value].join('|') : 'off';
-    if (key === this.dubKey) return;
+    const active = s.enabled && s.dubMode && state.status.value === 'ready' && Boolean(this.player);
+    // Duck level and pacing are applied live below; everything else rebuilds the engine.
+    const key = active
+      ? [s.primaryLang, s.secondaryLang, s.mergeFragments, s.dubProvider, s.azureKey ? 'k' : '', s.azureRegion, s.azureVoice, s.browserVoice, this.videoId, this.loadSeq].join('|')
+      : 'off';
+    if (key === this.dubKey) {
+      this.dub?.setOptions({ duck: s.dubDuck, slowVideo: s.dubSlowVideo });
+      return;
+    }
     this.dubKey = key;
-    this.stopDub();
-    if (!s.dubMode || state.status.value !== 'ready' || !this.player) {
+    const seq = ++this.dubSeq;
+    this.stopDub(false);
+    if (!active) {
       if (!s.dubMode) await this.restoreAudioTrack();
       return;
     }
-    const seq = ++this.dubSeq;
     const lang = baseLang(s.primaryLang);
 
     // Tier 0: the platform already has an audio track in the target language.
@@ -417,6 +542,7 @@ class SublingoYouTube {
     } catch (err) {
       console.debug('[Sublingo] dub: audio track lookup failed', err);
     }
+    if (seq !== this.dubSeq || !this.player) return;
 
     // Tier 1/3: speak the target-language captions ourselves.
     const status = (m: string) => {
@@ -434,9 +560,10 @@ class SublingoYouTube {
     this.dub.onTick(this.player.currentTime(), this.player.paused(), activeIndex(state.primaryCues.value, this.player.currentTime(), 0));
   }
 
-  private stopDub() {
+  private stopDub(resetKey = true) {
     this.dub?.stop();
     this.dub = undefined;
+    if (resetKey) this.dubKey = '';
     state.dubSource.value = 'none';
     state.dubStatus.value = '';
   }

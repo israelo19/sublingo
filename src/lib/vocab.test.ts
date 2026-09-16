@@ -27,6 +27,16 @@ describe('toCsv', () => {
   });
 });
 
+describe('toCsv formula guard', () => {
+  it('neutralizes cells that spreadsheets would treat as formulas', () => {
+    const csv = toCsv([{ ...entry, word: '=HYPERLINK("http://evil")', definition: '-1+1', sentence: '@cmd' }]);
+    const row = csv.trim().split('\r\n')[1];
+    expect(row.startsWith(`"'=HYPERLINK(""http://evil"")"`)).toBe(true);
+    expect(row).toContain(",'-1+1,");
+    expect(row).toContain(",'@cmd,");
+  });
+});
+
 describe('sourceUrl', () => {
   it('returns empty for unknown sites', () => {
     expect(sourceUrl({ site: 'other', videoId: 'x', time: 1 })).toBe('');

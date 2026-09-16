@@ -10,6 +10,7 @@
  */
 import { defineContentScript } from '#imports';
 import { baseLang, type SubtitleTrack, type TrackData } from '@/lib/subtitles/types';
+import type { AudioTrackSummary } from '@/lib/youtube/bridge';
 
 declare global {
   interface Window {
@@ -375,7 +376,7 @@ async function discover(videoId: string, preferredLang?: string): Promise<Discov
   }
 
   restore?.();
-  log('discovery', { videoId, source, pot: pot ? `${pot.slice(0, 8)}…` : null, tracks: raw.map((t) => `${t.languageCode}:${t.kind ?? 'manual'}`) });
+  log('discovery', { videoId, source, pot: pot ? 'present' : null, tracks: raw.map((t) => `${t.languageCode}:${t.kind ?? 'manual'}`) });
   return { raw, pot, title };
 }
 
@@ -420,17 +421,6 @@ function buildTracks(raw: RawCaptionTrack[], pot: string | undefined, wantedLang
 
 // ---------- Audio tracks (dub mode tier 0) ----------
 
-interface AudioTrackSummary {
-  index: number;
-  id: string;
-  /** Language code parsed from YouTube's track id, e.g. "fr" from "fr.4". */
-  lang: string;
-  name: string;
-  kind: string;
-  isDefault: boolean;
-  current: boolean;
-}
-
 /** The language info object lives under a minified key; find it by shape ({ id, name }). */
 function findLanguageInfo(track: RawAudioTrack): AudioTrackInfo {
   const direct = safe(() => track.getLanguageInfo?.()) ?? track.languageInfo ?? track.audioTrack;
@@ -468,6 +458,12 @@ function listAudioTracks(): { tracks: AudioTrackSummary[]; raw: RawAudioTrack[] 
 }
 
 // ---------- Bridge ----------
+
+/** Only YouTube's own caption endpoint may be fetched on behalf of the isolated script. */
+export function isTimedTextUrl(raw: string): boolean {
+  const url = safe(() => new URL(raw, location.href));
+  return Boolean(url && url.protocol === 'https:' && /(^|\.)youtube\.com$/.test(url.hostname) && url.pathname === '/api/timedtext');
+}
 
 const respond = (eventName: string, detail: object) =>
   document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(detail) }));
@@ -529,6 +525,10 @@ export default defineContentScript({
     document.addEventListener('sublingo:fetch', (e) => {
       const req = parseDetail<{ requestId: string; url: string }>(e);
       if (!req) return;
+      if (!isTimedTextUrl(req.url)) {
+        respond('sublingo:fetched', { requestId: req.requestId, ok: false, error: 'Refused: not a YouTube caption URL' });
+        return;
+      }
       fetch(req.url, { credentials: 'include' })
         .then(async (res) => {
           const text = await res.text();

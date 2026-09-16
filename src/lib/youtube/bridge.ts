@@ -44,7 +44,7 @@ export class YoutubeBridge {
   }
 
   private request<T>(requestEvent: string, responseEvent: string, payload: object, timeoutMs: number): Promise<T> {
-    const requestId = `${Date.now()}-${++this.seq}`;
+    const requestId = `${++this.seq}-${crypto.randomUUID()}`;
     return new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         document.removeEventListener(responseEvent, handler);

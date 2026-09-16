@@ -316,6 +316,36 @@ so each line lands in its slot, using Azure's exact clip lengths and a self-cali
 characters-per-second estimate for the browser voice. Smoke test now samples volume and rate
 during dialogue and fails on full-volume leaks.
 
+## 6.3 Bug run 3 (2026-09-16): broadcast-caption artifacts and fragmentary translation
+
+Symptoms on an English NBA video: `>>` speaker markers in the English line, lines cut
+mid-sentence ("infirmière. Je devrais dire que Van Ble a la"), and the dub voice reading speaker
+labels ("Mabel:"). Not a regression: earlier tests used human French captions; these videos have
+broadcast closed captions that YouTube machine-translates fragment by fragment.
+
+Fix (`src/lib/subtitles/clean.ts`): decode entities, drop `>>` and single leading dashes, join
+consecutive fragments into sentence-sized cues (stop at sentence-final punctuation, speaker
+changes, gaps over 0.6 s, 100 characters or 7 s), and, when the main line is YouTube's per-fragment
+translation, segment it by the source track's sentences and re-translate whole sentences with
+Chrome's on-device translator, nearest lines first, swapping the text in as results arrive. The
+voice strips `NAME:` labels before speaking. Setting "Join caption fragments into sentences"
+(default on).
+
+Security pass the same day: secrets and history scan clean, `npm audit` clean, no dangerous DOM
+sinks, permissions minimal. Hardening added: caption downloads limited to YouTube's caption
+endpoint, dictionary links limited to http(s), CSV formula guard, background message validation,
+Azure region and voice-name validation, unguessable bridge request ids.
+
+Code review the same day (structured, high effort, all of `src`): 10 confirmed correctness findings,
+all in the dub code and its wiring, all fixed: Azure kept up to 80 `<audio>` elements alive (Chrome
+caps ~75 per page) so long videos went silent, now two pooled elements with durations decoded via
+AudioContext; settings changes could destroy the engine without recreating it; a stale `syncDub`
+could resurrect dubbing after it was turned off; the master Off switch did not stop speech; rapid
+duck flips ratcheted the volume down; seeks made while paused and short replays were not detected;
+ads played at ducked volume; parallel Azure prefetches burst past the quota (now serialized); the
+Azure voice ignored a language switch; speech could start over a paused frame. Plus cleanup: one
+`baseLang`, shared types, dead code removed, retry now also covers the second caption track.
+
 ## 7. Risks and how the plan handles them
 
 | Risk | Mitigation |

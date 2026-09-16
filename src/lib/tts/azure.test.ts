@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RateLimiter, buildSsml, defaultAzureVoice, voiceLocale, voicesForLanguage } from './azure';
+import { RateLimiter, buildSsml, defaultAzureVoice, effectiveAzureVoice, voiceLocale, voicesForLanguage } from './azure';
 
 describe('buildSsml', () => {
   it('escapes text and sets the voice locale', () => {
@@ -17,6 +17,12 @@ describe('voices', () => {
     expect(defaultAzureVoice('fr-FR')).toBe('fr-FR-DeniseNeural');
     expect(defaultAzureVoice('xx')).toBe('en-US-AvaMultilingualNeural');
     expect(voiceLocale('pt-BR-FranciscaNeural')).toBe('pt-BR');
+  });
+  it('ignores a configured voice that speaks another language', () => {
+    expect(effectiveAzureVoice('fr-FR-DeniseNeural', 'fr')).toBe('fr-FR-DeniseNeural');
+    expect(effectiveAzureVoice('fr-FR-DeniseNeural', 'es')).toBe('es-ES-ElviraNeural');
+    expect(effectiveAzureVoice('en-US-AvaMultilingualNeural', 'fr')).toBe('en-US-AvaMultilingualNeural');
+    expect(effectiveAzureVoice('', 'de')).toBe('de-DE-KatjaNeural');
   });
   it('filters and ranks voices for a language', () => {
     const list = voicesForLanguage(

@@ -41,24 +41,38 @@ export class BrowserVoiceProvider implements DubVoiceProvider {
 }
 
 interface Clip {
-  audio: HTMLAudioElement;
   url: string;
+  /** Seconds; 0 when unknown. */
   duration: number;
 }
 
 const CLIP_WAIT_MS = 900;
+const FAILURE_RETRY_MS = 15000;
+const MAX_CACHED_CLIPS = 80;
 
-/** Azure neural voice, synthesized in the background worker and cached there; browser voice fills in when a clip is late. */
+/**
+ * Azure neural voice, synthesized in the background worker and cached there.
+ *
+ * Clips are kept as blob URLs plus a decoded duration; only two <audio> elements ever exist
+ * (Chrome caps media players per document at about 75), alternating so the next line can be
+ * preloaded while the current one plays. The browser voice fills in when a clip is late.
+ */
 export class AzureVoiceProvider implements DubVoiceProvider {
   readonly name = 'azure' as const;
   private readonly clips = new Map<string, Promise<Clip | undefined>>();
+  private readonly failedAt = new Map<string, number>();
+  private readonly elements = [new Audio(), new Audio()];
+  private elementIndex = 0;
+  private audioContext?: AudioContext;
   private active?: ClipHandle;
 
   constructor(
     private readonly lang: string,
     private readonly fallback: BrowserVoiceProvider | undefined,
     private readonly onStatus: (message: string) => void,
-  ) {}
+  ) {
+    for (const el of this.elements) el.preload = 'auto';
+  }
 
   private key(cue: Cue) {
     return `${cue.start.toFixed(2)}|${cue.text}`;
@@ -67,15 +81,29 @@ export class AzureVoiceProvider implements DubVoiceProvider {
   prepare(cue: Cue): void {
     const k = this.key(cue);
     if (this.clips.has(k)) return;
+    const failed = this.failedAt.get(k);
+    if (failed && Date.now() - failed < FAILURE_RETRY_MS) return;
     const p = this.fetchClip(cue).catch((err) => {
       this.onStatus(err instanceof Error ? err.message : String(err));
+      this.failedAt.set(k, Date.now());
+      this.clips.delete(k); // allow a retry later instead of caching the failure forever
       return undefined;
     });
     this.clips.set(k, p);
-    if (this.clips.size > 80) {
+    if (this.clips.size > MAX_CACHED_CLIPS) {
       const oldest = this.clips.keys().next().value as string;
       void this.clips.get(oldest)?.then((c) => c && URL.revokeObjectURL(c.url));
       this.clips.delete(oldest);
+    }
+  }
+
+  private async decodeDuration(bytes: Uint8Array): Promise<number> {
+    try {
+      this.audioContext ??= new AudioContext();
+      const buffer = await this.audioContext.decodeAudioData(bytes.slice().buffer);
+      return Number.isFinite(buffer.duration) ? buffer.duration : 0;
+    } catch {
+      return 0;
     }
   }
 
@@ -84,18 +112,14 @@ export class AzureVoiceProvider implements DubVoiceProvider {
     if ('error' in res) throw new Error(res.error);
     const bytes = Uint8Array.from(atob(res.audio), (c) => c.charCodeAt(0));
     const url = URL.createObjectURL(new Blob([bytes], { type: res.mime }));
-    const audio = new Audio(url);
-    audio.preload = 'auto';
-    const duration = await new Promise<number>((resolve) => {
-      audio.addEventListener('loadedmetadata', () => resolve(audio.duration), { once: true });
-      audio.addEventListener('error', () => resolve(0), { once: true });
-    });
-    return { audio, url, duration: Number.isFinite(duration) ? duration : 0 };
+    return { url, duration: await this.decodeDuration(bytes) };
   }
 
   private readyClip(cue: Cue): Promise<Clip | undefined> {
     this.prepare(cue);
-    return Promise.race([this.clips.get(this.key(cue))!, new Promise<undefined>((r) => setTimeout(() => r(undefined), CLIP_WAIT_MS))]);
+    const pending = this.clips.get(this.key(cue));
+    if (!pending) return Promise.resolve(undefined);
+    return Promise.race([pending, new Promise<undefined>((r) => setTimeout(() => r(undefined), CLIP_WAIT_MS))]);
   }
 
   async durationOf(cue: Cue): Promise<number | undefined> {
@@ -105,14 +129,11 @@ export class AzureVoiceProvider implements DubVoiceProvider {
 
   async speak(cue: Cue, index: number, speechRate: number): Promise<ClipHandle | undefined> {
     const clip = await this.readyClip(cue);
-    if (!clip) {
-      if (this.fallback) {
-        this.onStatus('Azure clip not ready, using the browser voice for this line');
-        return this.fallback.speak(cue, index, speechRate);
-      }
-      return undefined;
-    }
-    const audio = clip.audio;
+    if (!clip) return this.speakFallback(cue, index, speechRate, 'Azure clip not ready, using the browser voice for this line');
+
+    const audio = this.elements[this.elementIndex];
+    this.elementIndex = (this.elementIndex + 1) % this.elements.length;
+    if (audio.src !== clip.url) audio.src = clip.url;
     audio.playbackRate = speechRate;
     audio.currentTime = 0;
     let settle: () => void = () => undefined;
@@ -122,12 +143,15 @@ export class AzureVoiceProvider implements DubVoiceProvider {
     try {
       await audio.play();
     } catch (err) {
-      this.onStatus(err instanceof Error && err.name === 'NotAllowedError' ? 'Click the video once to allow dubbed audio' : String(err));
       settle();
-      return undefined;
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        this.onStatus('Click the video once to allow dubbed audio');
+        return undefined;
+      }
+      return this.speakFallback(cue, index, speechRate, 'Audio playback failed, using the browser voice for this line');
     }
     const handle: ClipHandle = {
-      done: finished.then(() => ({ actualSec: clip.duration / speechRate })),
+      done: finished.then(() => ({ actualSec: clip.duration > 0 ? clip.duration / speechRate : undefined })),
       cancel: () => {
         audio.pause();
         settle();
@@ -141,8 +165,23 @@ export class AzureVoiceProvider implements DubVoiceProvider {
     return handle;
   }
 
+  private speakFallback(cue: Cue, index: number, speechRate: number, message: string): Promise<ClipHandle | undefined> {
+    if (!this.fallback) return Promise.resolve(undefined);
+    this.onStatus(message);
+    return this.fallback.speak(cue, index, speechRate);
+  }
+
   cancelAll(): void {
     this.active?.cancel();
     this.fallback?.cancelAll();
+    for (const el of this.elements) {
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+    }
+    for (const p of this.clips.values()) void p.then((c) => c && URL.revokeObjectURL(c.url));
+    this.clips.clear();
+    void this.audioContext?.close().catch(() => undefined);
+    this.audioContext = undefined;
   }
 }

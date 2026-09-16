@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { AzureTtsResponse, AzureVoicesResponse } from '@/lib/messages';
 import { DEFAULT_SETTINGS, LANGUAGES, loadSettings, settingsItem, watchSettings, type Settings } from '@/lib/settings';
 import { mtSupported } from '@/lib/translate/chrome';
-import { AZURE_REGIONS, defaultAzureVoice } from '@/lib/tts/azure';
+import { AZURE_REGIONS, defaultAzureVoice, effectiveAzureVoice } from '@/lib/tts/azure';
 import { loadVoices, rankVoices, speakBrowser } from '@/lib/tts/browser';
 import { vocabItem } from '@/lib/vocab';
 
@@ -142,6 +142,7 @@ export function PopupApp() {
           hint={mt ? 'Word glosses and literal line translations, free and offline' : 'Not available in this browser'}
           disabled={!mt}
         />
+        <Toggle k="mergeFragments" label="Join caption fragments into sentences" hint="Broadcast captions often break mid-sentence" />
         <Toggle k="hideNativeCaptions" label="Hide the site's own captions" />
       </section>
 
@@ -199,7 +200,10 @@ export function PopupApp() {
                 </label>
                 <label class="col">
                   Voice
-                  <select value={settings.azureVoice} onChange={(e) => update({ azureVoice: (e.currentTarget as HTMLSelectElement).value })}>
+                  <select
+                    value={effectiveAzureVoice(settings.azureVoice, settings.primaryLang) === settings.azureVoice ? settings.azureVoice : ''}
+                    onChange={(e) => update({ azureVoice: (e.currentTarget as HTMLSelectElement).value })}
+                  >
                     <option value="">Default ({defaultAzureVoice(settings.primaryLang)})</option>
                     {azureVoices.map((v) => (
                       <option value={v.shortName}>

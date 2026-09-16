@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseFreeDict } from './freedict';
 import { parseWiktionaryRest } from './wiktionary';
-import { candidates } from './lookup';
+import { candidates, safeHttpUrl } from './lookup';
 
 describe('parseFreeDict', () => {
   it('extracts POS, IPA, senses and lemma', () => {
@@ -37,6 +37,15 @@ describe('parseWiktionaryRest', () => {
       'fr',
     );
     expect(parsed.entries).toEqual([{ partOfSpeech: 'Verb', senses: [{ definition: 'to eat', examples: ['Je mange.'] }] }]);
+  });
+});
+
+describe('safeHttpUrl', () => {
+  it('accepts http(s) and rejects everything else', () => {
+    expect(safeHttpUrl('https://en.wiktionary.org/wiki/manger')).toBe('https://en.wiktionary.org/wiki/manger');
+    expect(safeHttpUrl('javascript:alert(1)')).toBeUndefined();
+    expect(safeHttpUrl('not a url')).toBeUndefined();
+    expect(safeHttpUrl(undefined)).toBeUndefined();
   });
 });
 

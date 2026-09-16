@@ -19,6 +19,8 @@ export interface Settings {
   captionOffset: number;
   /** Use Chrome's on-device Translator API for literal translations and word glosses. */
   machineTranslation: boolean;
+  /** Join caption fragments that break mid-sentence into sentence-sized lines. */
+  mergeFragments: boolean;
   ankiUrl: string;
   ankiDeck: string;
   ankiModel: string;
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   fontSize: 100,
   captionOffset: 11,
   machineTranslation: true,
+  mergeFragments: true,
   ankiUrl: 'http://127.0.0.1:8765',
   ankiDeck: 'Sublingo',
   ankiModel: 'Sublingo',

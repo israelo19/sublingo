@@ -19,4 +19,8 @@ describe('speakableText', () => {
   it('strips tags and notes but keeps the words', () => {
     expect(speakableText('♪ [musique] Oui. » CERTAINEMENT. (rires)')).toBe('Oui. » CERTAINEMENT.');
   });
+  it('drops speaker labels and speaker-change markers', () => {
+    expect(speakableText('>> MABEL: Where are you going?')).toBe('Where are you going?');
+    expect(isSpeakable('MABEL:')).toBe(false);
+  });
 });
