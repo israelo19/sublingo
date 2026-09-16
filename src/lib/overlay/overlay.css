@@ -1,0 +1,298 @@
+/* WXT resets the host with `:host { all: initial !important }`. Inside the shadow tree an
+   important rule beats anything set on the host from the page, so the host box is defined here. */
+:host(sublingo-overlay) {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  pointer-events: none !important;
+  z-index: 61 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+.sl-container {
+  all: initial;
+}
+
+.sl-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: block;
+}
+
+.sl-root {
+  --sl-scale: 1;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: #fff;
+  line-height: 1.35;
+}
+
+.sl-root * {
+  box-sizing: border-box;
+}
+
+.sl-captions {
+  position: absolute;
+  left: 50%;
+  bottom: 11%;
+  transform: translateX(-50%);
+  max-width: 88%;
+  padding: calc(8px * var(--sl-scale)) calc(14px * var(--sl-scale));
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.62);
+  text-align: center;
+  pointer-events: auto;
+  cursor: default;
+  user-select: text;
+  transition: bottom 0.15s ease;
+}
+
+.sl-primary {
+  font-size: calc(26px * var(--sl-scale));
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: pre-wrap;
+}
+
+.sl-word {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 1px;
+  transition: background 0.1s ease;
+}
+
+.sl-word:hover {
+  background: rgba(255, 220, 90, 0.35);
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 220, 90, 0.9);
+  text-underline-offset: 3px;
+}
+
+.sl-secondary {
+  margin-top: calc(4px * var(--sl-scale));
+  font-size: calc(19px * var(--sl-scale));
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.86);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  transition: filter 0.15s ease;
+}
+
+.sl-secondary.sl-blur {
+  filter: blur(6px);
+}
+
+.sl-captions:hover .sl-secondary.sl-blur {
+  filter: none;
+}
+
+.sl-status {
+  position: absolute;
+  left: 12px;
+  bottom: 60px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 13px;
+  color: #ddd;
+  pointer-events: none;
+}
+
+.sl-status-error {
+  color: #ffb4a8;
+}
+
+.sl-badge {
+  all: unset;
+  position: absolute;
+  left: 12px;
+  bottom: 60px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  font: 600 11px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.85);
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.sl-root:hover .sl-badge,
+.sl-badge:focus-visible {
+  opacity: 1;
+}
+
+/* ---------- word popup ---------- */
+
+.sl-popup {
+  position: absolute;
+  left: clamp(176px, var(--x), calc(100% - 176px));
+  top: var(--y);
+  transform: translate(-50%, calc(-100% - 12px));
+  width: 340px;
+  max-width: 92%;
+  max-height: 70%;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(20, 20, 24, 0.97);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color: #eee;
+  font-size: 14px;
+  text-align: left;
+  pointer-events: auto;
+  user-select: text;
+}
+
+.sl-popup-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-right: 24px;
+  position: relative;
+}
+
+.sl-popup-word {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.sl-popup-lemma {
+  color: #bbb;
+}
+
+.sl-popup-ipa {
+  color: #9ad;
+  font-family: 'Charis SIL', 'Doulos SIL', 'Gentium', 'Segoe UI', sans-serif;
+}
+
+.sl-link {
+  all: unset;
+  color: #ffd86b;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+.sl-close {
+  all: unset;
+  position: absolute;
+  right: -4px;
+  top: -6px;
+  width: 26px;
+  height: 26px;
+  line-height: 26px;
+  text-align: center;
+  border-radius: 50%;
+  color: #aaa;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.sl-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.sl-popup-body {
+  margin-top: 8px;
+}
+
+.sl-form-note {
+  color: #bbb;
+  font-style: italic;
+  margin-bottom: 6px;
+}
+
+.sl-entry + .sl-entry {
+  margin-top: 8px;
+}
+
+.sl-pos {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9ad;
+  margin-bottom: 2px;
+}
+
+.sl-entry ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.sl-entry li {
+  margin: 2px 0;
+}
+
+.sl-muted {
+  color: #999;
+}
+
+.sl-error {
+  color: #ffb4a8;
+}
+
+.sl-popup-sentence {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ccc;
+  font-size: 13px;
+}
+
+.sl-popup-sentence mark {
+  background: rgba(255, 216, 107, 0.3);
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.sl-popup-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sl-btn {
+  all: unset;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #ffd86b;
+  color: #1a1a1a;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sl-btn:hover {
+  background: #ffe28f;
+}
+
+.sl-btn:disabled {
+  background: #444;
+  color: #999;
+  cursor: default;
+}
+
+.sl-source {
+  color: #888;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.sl-source:hover {
+  color: #ccc;
+  text-decoration: underline;
+}

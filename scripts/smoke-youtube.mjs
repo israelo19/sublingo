@@ -1,0 +1,222 @@
+// Loads the built extension into Chromium, opens a captioned French YouTube
+// video, and checks that Sublingo renders dual captions and a dictionary popup.
+// Usage: node scripts/smoke-youtube.mjs [videoId] [--headed]
+import { chromium } from 'playwright';
+import { existsSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
+
+const OUT = process.env.SMOKE_OUT ?? path.resolve('test-results');
+mkdirSync(OUT, { recursive: true });
+const EXT = path.resolve('.output/chrome-mv3');
+if (!existsSync(EXT)) throw new Error(`Build first: ${EXT} missing`);
+
+const args = process.argv.slice(2);
+const headed = args.includes('--headed');
+const videoIdArg = args.find((a) => !a.startsWith('--'));
+
+const context = await chromium.launchPersistentContext(path.resolve('playwright-profile'), {
+  channel: 'chromium',
+  headless: !headed,
+  viewport: { width: 1280, height: 800 },
+  locale: 'en-US',
+  args: [
+    `--disable-extensions-except=${EXT}`,
+    `--load-extension=${EXT}`,
+    '--autoplay-policy=no-user-gesture-required',
+    '--mute-audio',
+    '--disable-blink-features=AutomationControlled',
+  ],
+});
+
+const logs = [];
+const page = context.pages()[0] ?? (await context.newPage());
+page.on('console', (m) => {
+  const text = m.text();
+  if (/sublingo|Sublingo/i.test(text) || m.type() === 'error') logs.push(`[${m.type()}] ${text.slice(0, 300)}`);
+});
+page.on('pageerror', (e) => logs.push(`[pageerror] ${String(e).slice(0, 300)}`));
+const netlog = [];
+page.on('response', (r) => {
+  const u = r.url();
+  if (/api\/timedtext|youtubei\/v1\/player/.test(u)) {
+    netlog.push(`${r.status()} ${r.request().method()} len=${r.headers()['content-length'] ?? '?'} ${u.slice(0, 200)}`);
+  }
+});
+
+const report = { videoId: videoIdArg, steps: [] };
+const step = (name, ok, extra = {}) => {
+  report.steps.push({ name, ok, ...extra });
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name} ${extra.detail ?? ''}`);
+};
+
+try {
+  let videoId = videoIdArg;
+  if (!videoId) {
+    await page.goto('https://www.youtube.com/results?search_query=le+journal+en+fran%C3%A7ais+facile&sp=EgIoAQ%253D%253D', {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.waitForSelector('a#video-title', { timeout: 30000 });
+    const hrefs = await page.$$eval('a#video-title', (as) => as.map((a) => a.getAttribute('href')).filter(Boolean));
+    const first = hrefs.find((h) => h.startsWith('/watch?v='));
+    videoId = new URL(first, 'https://www.youtube.com').searchParams.get('v');
+    report.videoId = videoId;
+    step('find a captioned video via search', Boolean(videoId), { detail: videoId });
+  }
+
+  await page.goto(`https://www.youtube.com/watch?v=${videoId}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#movie_player video', { timeout: 30000 });
+  await page.evaluate(() => {
+    const v = document.querySelector('video');
+    if (v) {
+      v.muted = true;
+      void v.play();
+    }
+  });
+
+  // Wait for the shadow host and for either captions or an error status.
+  const host = page.locator('sublingo-overlay');
+  await host.waitFor({ state: 'attached', timeout: 30000 });
+  step('overlay host mounted', true);
+
+  const outcome = await page.waitForFunction(
+    () => {
+      const root = document.querySelector('sublingo-overlay')?.shadowRoot;
+      if (!root) return null;
+      const err = root.querySelector('.sl-status-error');
+      if (err) return { error: err.textContent };
+      const primary = root.querySelector('.sl-primary');
+      if (primary && primary.textContent.trim()) {
+        return {
+          primary: primary.textContent.trim(),
+          secondary: root.querySelector('.sl-secondary')?.textContent?.trim() ?? '',
+          badge: root.querySelector('.sl-badge')?.textContent?.trim() ?? '',
+        };
+      }
+      return null;
+    },
+    null,
+    { timeout: 45000 },
+  ).then((h) => h.jsonValue());
+  report.outcome = outcome;
+  step('captions rendered', Boolean(outcome?.primary), { detail: JSON.stringify(outcome) });
+  if (!outcome?.primary) {
+    report.probe = await page.evaluate(async () => {
+      const out = { webdriver: navigator.webdriver };
+      const p = document.querySelector('#movie_player');
+      const tracks = p?.getAudioTrack?.()?.captionTracks ?? [];
+      const u = tracks[0]?.url || tracks[0]?.baseUrl;
+      if (u) {
+        for (const fmt of ['json3', 'srv3', 'none']) {
+          const url = new URL(u, location.href);
+          if (fmt === 'none') url.searchParams.delete('fmt'); else url.searchParams.set('fmt', fmt);
+          const r = await fetch(url.toString(), { credentials: 'include' });
+          out[`playerUrl_${fmt}`] = `${r.status} len=${(await r.text()).length} pot=${url.searchParams.has('pot')}`;
+        }
+      }
+      try {
+        const key = window.ytcfg?.get?.('INNERTUBE_API_KEY');
+        const vid = new URLSearchParams(location.search).get('v');
+        const r = await fetch(`/youtubei/v1/player?key=${key}&prettyPrint=false`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', hl: 'en' } }, videoId: vid }),
+        });
+        out.androidStatus = r.status;
+        const j = await r.json();
+        const t = j?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+        out.androidTracks = t.map((x) => `${x.languageCode}:${x.kind || 'manual'}`);
+        if (t[0]?.baseUrl) {
+          const url = new URL(t[0].baseUrl, location.href);
+          url.searchParams.set('fmt', 'json3');
+          const rr = await fetch(url.toString());
+          out.androidFetch = `${rr.status} len=${(await rr.text()).length}`;
+          out.androidUrl = url.toString().slice(0, 240);
+        }
+      } catch (e) {
+        out.androidError = String(e);
+      }
+      try {
+        p.loadModule('captions');
+        p.setOption('captions', 'track', { languageCode: 'fr' });
+      } catch (e) {
+        out.nativeErr = String(e);
+      }
+      await new Promise((r) => setTimeout(r, 6000));
+      out.nativeCaptionText = [...document.querySelectorAll('.ytp-caption-segment')].map((e) => e.textContent).join(' | ').slice(0, 200);
+      return out;
+    });
+    report.diagnostics = await page.evaluate(() => {
+      const p = document.querySelector('#movie_player');
+      const tracks = p?.getAudioTrack?.()?.captionTracks ?? [];
+      const pr = p?.getPlayerResponse?.();
+      return {
+        audioTrackUrls: tracks.map((t) => (t.url || t.baseUrl || '').slice(0, 200)),
+        hasPotKey: Boolean(sessionStorage.getItem('iU5q-!O9@$')),
+        prHasCaptions: Boolean(pr?.captions),
+        prTracks: (pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? []).map((t) => `${t.languageCode}:${t.kind || 'manual'}`),
+        captionOption: p?.getOption?.('captions', 'track'),
+      };
+    });
+  }
+
+  await page.screenshot({ path: path.join(OUT, 'youtube-captions.png') });
+
+  if (outcome?.primary) {
+    // Pause first: the caption must stay on screen while paused (pause-with-caption).
+    await page.evaluate(() => document.querySelector('video')?.pause());
+    await page.waitForTimeout(600);
+    const frozen = await page.evaluate(() => document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-primary')?.textContent?.trim());
+    step('caption stays on screen while paused', Boolean(frozen), { detail: frozen?.slice(0, 60) });
+    await page.screenshot({ path: path.join(OUT, 'youtube-paused.png') });
+
+    // Click the first word and wait for the dictionary popup.
+    const word = host.locator('.sl-word').first();
+    const wordText = await word.textContent();
+    await word.click();
+    const popup = host.locator('.sl-popup');
+    await popup.waitFor({ timeout: 15000 });
+    await page.waitForFunction(
+      () => {
+        const root = document.querySelector('sublingo-overlay')?.shadowRoot;
+        const body = root?.querySelector('.sl-popup-body');
+        return body && !/Looking up/.test(body.textContent);
+      },
+      null,
+      { timeout: 20000 },
+    );
+    const popupText = (await popup.textContent()).replace(/\s+/g, ' ').trim();
+    const paused = await page.evaluate(() => document.querySelector('video')?.paused);
+    step('dictionary popup for first word', Boolean(popupText), { detail: `word="${wordText}" paused=${paused} :: ${popupText.slice(0, 220)}` });
+    await page.screenshot({ path: path.join(OUT, 'youtube-popup.png') });
+
+    // Hotkey: close popup with Escape, then D for next line should change the caption.
+    await page.keyboard.press('Escape');
+    const before = outcome.primary;
+    await page.keyboard.press('d');
+    await page.waitForTimeout(800);
+    const after = await page.evaluate(() => document.querySelector('sublingo-overlay')?.shadowRoot?.querySelector('.sl-primary')?.textContent?.trim());
+    step('hotkey D advances to next line', Boolean(after) && after !== before, { detail: `"${before?.slice(0, 40)}" -> "${after?.slice(0, 40)}"` });
+
+    // Settings popup renders.
+    const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker', { timeout: 10000 }).catch(() => undefined));
+    if (worker) {
+      const extId = new URL(worker.url()).host;
+      const popupPage = await context.newPage();
+      await popupPage.goto(`chrome-extension://${extId}/popup.html`);
+      await popupPage.waitForSelector('h1', { timeout: 10000 });
+      const popupTitle = await popupPage.textContent('h1');
+      await popupPage.setViewportSize({ width: 340, height: 520 });
+      await popupPage.screenshot({ path: path.join(OUT, 'settings-popup.png') });
+      step('settings popup renders', popupTitle?.trim() === 'Sublingo', { detail: popupTitle });
+      await popupPage.close();
+    }
+  }
+} catch (err) {
+  step('smoke run', false, { detail: String(err).slice(0, 900) });
+  await page.screenshot({ path: path.join(OUT, 'youtube-failure.png') }).catch(() => undefined);
+} finally {
+  report.logs = logs.slice(0, 40);
+  report.network = netlog.slice(0, 30);
+  console.log(JSON.stringify(report, null, 2));
+  await context.close();
+}
